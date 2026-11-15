@@ -15,6 +15,7 @@ bitflags.workspace = true
 rayon.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+trash.workspace = true
 
 # Cluster size (GetDiskFreeSpaceW) and exact on-disk size of compressed/sparse files
 # (GetCompressedFileSizeW) — safe wrappers, so no `unsafe` in our code.

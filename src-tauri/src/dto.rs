@@ -7,7 +7,7 @@
 
 use disksieve_core::{
     Node, NodeFlags, NodeId, OtherBucket, ScanProgress, ScanTree, SizeMetric, SpaceBalance,
-    Viewport, ROOT,
+    TrashError, TrashOutcome, Viewport, ROOT,
 };
 use std::time::Duration;
 
@@ -351,6 +351,100 @@ impl ViewportDto {
     }
 }
 
+/// Why one entry of a trash / restore request failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum TrashErrorKindDto {
+    /// Refused by the backend guard (protected location, link, cloud file, …).
+    Protected,
+    /// The entry changed on disk since the scan.
+    Changed,
+    /// The entry no longer exists.
+    Missing,
+    /// The Trash operation itself failed (permissions, file in use, …).
+    Failed,
+}
+
+/// Result for one requested node.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct TrashItemDto {
+    pub id: u32,
+    /// Display path.
+    pub path: String,
+    /// `null` on success.
+    pub error: Option<String>,
+    pub error_kind: Option<TrashErrorKindDto>,
+    /// Size on disk moved to (or restored from) Trash; 0 on failure.
+    #[ts(type = "number")]
+    pub allocated_bytes: u64,
+    #[ts(type = "number")]
+    pub logical_bytes: u64,
+    pub file_count: u32,
+}
+
+impl From<&TrashOutcome> for TrashItemDto {
+    fn from(o: &TrashOutcome) -> Self {
+        let (freed, error, error_kind) = match &o.result {
+            Ok(freed) => (*freed, None, None),
+            Err(e) => {
+                let kind = match e {
+                    TrashError::InvalidNode(_) | TrashError::Refused(_) => {
+                        TrashErrorKindDto::Protected
+                    }
+                    TrashError::Changed(_) => TrashErrorKindDto::Changed,
+                    TrashError::Missing => TrashErrorKindDto::Missing,
+                    TrashError::Io(_) => TrashErrorKindDto::Failed,
+                };
+                (Default::default(), Some(e.to_string()), Some(kind))
+            }
+        };
+        Self {
+            id: o.id,
+            path: o.path.clone(),
+            error,
+            error_kind,
+            allocated_bytes: freed.allocated,
+            logical_bytes: freed.logical,
+            file_count: freed.files,
+        }
+    }
+}
+
+/// Outcome of `trash_nodes` / `restore_nodes`: one item per requested node plus totals of
+/// the successful ones.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct TrashReportDto {
+    #[ts(type = "number")]
+    pub generation: u64,
+    pub items: Vec<TrashItemDto>,
+    #[ts(type = "number")]
+    pub allocated_bytes: u64,
+    #[ts(type = "number")]
+    pub logical_bytes: u64,
+    pub file_count: u32,
+    /// Whether moved items can be restored with `restore_nodes` (Windows, Linux).
+    pub undo_available: bool,
+}
+
+impl TrashReportDto {
+    pub fn new(generation: u64, outcomes: &[TrashOutcome], undo_available: bool) -> Self {
+        let items: Vec<TrashItemDto> = outcomes.iter().map(TrashItemDto::from).collect();
+        Self {
+            generation,
+            allocated_bytes: items.iter().map(|i| i.allocated_bytes).sum(),
+            logical_bytes: items.iter().map(|i| i.logical_bytes).sum(),
+            file_count: items.iter().map(|i| i.file_count).sum(),
+            items,
+            undo_available,
+        }
+    }
+}
+
 fn flag_names(flags: NodeFlags) -> Vec<String> {
     const NAMES: [(NodeFlags, &str); 6] = [
         (NodeFlags::HARDLINK, "hardlink"),
@@ -488,6 +582,54 @@ mod tests {
         let json = serde_json::to_value(&dto).unwrap();
         assert_eq!(json["unaccountedBytes"], 50, "{json}");
         assert_eq!(json["scannedBytes"], 650, "{json}");
+    }
+
+    #[test]
+    fn trash_report_sums_successes_and_classifies_errors() {
+        use disksieve_core::{Freed, Refusal};
+        let ok = |id, allocated| TrashOutcome {
+            id,
+            path: format!("/p/{id}"),
+            result: Ok(Freed {
+                logical: allocated / 2,
+                allocated,
+                files: 1,
+            }),
+        };
+        let outcomes = [
+            ok(1, 4096),
+            TrashOutcome {
+                id: 2,
+                path: "/p/2".into(),
+                result: Err(Refusal::SystemLocation.into()),
+            },
+            TrashOutcome {
+                id: 3,
+                path: "/p/3".into(),
+                result: Err(TrashError::Changed("size differs")),
+            },
+            ok(4, 8192),
+        ];
+        let report = TrashReportDto::new(5, &outcomes, true);
+        assert_eq!(
+            (
+                report.allocated_bytes,
+                report.logical_bytes,
+                report.file_count
+            ),
+            (12_288, 6_144, 2)
+        );
+        assert_eq!(
+            report.items[1].error_kind,
+            Some(TrashErrorKindDto::Protected)
+        );
+        assert_eq!(report.items[2].error_kind, Some(TrashErrorKindDto::Changed));
+        assert_eq!(report.items[2].allocated_bytes, 0);
+
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["undoAvailable"], true, "{json}");
+        assert_eq!(json["items"][1]["errorKind"], "protected", "{json}");
+        assert!(json["items"][0]["error"].is_null(), "{json}");
     }
 
     #[test]

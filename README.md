@@ -17,7 +17,7 @@ It answers not only *“what is taking up space?”*, but also *“what can I sa
 
 > [!WARNING]
 > DiskSieve is in early development (working towards `v0.1.0`). There are no installers yet — build it from source to try it.
-> Deleting files is not wired up yet, so the app is currently **read-only**: it never changes anything on your disk.
+> Scanning is read-only. The only action that changes your disk is **Move to Trash**, which always asks first, is checked by the backend and can be undone on Windows and Linux.
 
 ---
 
@@ -65,9 +65,10 @@ Existing tools show *what* takes up space, then leave you alone with the harder 
 | ✅ | **Size on disk vs. logical size** | One toggle switches between allocated space (clusters, compression, sparse files) and apparent size. |
 | ✅ | **Color modes** | *By extension* (file categories) and *Cold Data* (age of the newest file in each folder). |
 | ✅ | **Drive picker** | Mounted volumes with usage bars, or any single folder via the native picker. |
-| 🚧 | **App shell** | Custom title bar, startup “what to scan?” dialog, detailed scan progress dialog, dark loader instead of a white flash. |
-| 🗓️ | **Space reconciliation** | “The disk reports 812 GB used, the scan sees 776 GB — here is where the other 36 GB are” (restore points, shadow copies, folders without access). |
-| 🗓️ | **Safe Move to Trash** | System Trash only, protected paths enforced in the backend, file re-checked before deletion, instant tree update without rescanning. |
+| ✅ | **App shell** | Custom title bar, startup “what to scan?” dialog, detailed scan progress dialog, dark loader instead of a white flash. |
+| ✅ | **Space reconciliation** | “The disk reports 812 GB used, the scan sees 776 GB — here is where the other 36 GB are” (restore points, shadow copies, folders without access). |
+| ✅ | **Safe Move to Trash** | System Trash only, protected paths enforced in the backend, each item re-checked against the scan before it is moved, instant tree update without rescanning, Undo on Windows and Linux. |
+| ✅ | **File actions** | Right-click any tile or row: inspect, show in File Explorer / Finder, copy the full path, move to Trash. |
 | 🗓️ | **Dev Junk** | Build artifacts detected by project marker files (no false hits on any random `build/` folder), grouped by project and its age. |
 | 🗓️ | **Search (`Ctrl+K`)** | Instant name search in the scanned tree — no disk access. |
 | 🗓️ | **Safety Advisor** | A verdict for every item (*safe* / *review* / *system*) with an explanation and a safe alternative (e.g. `powercfg -h off` instead of deleting `hiberfil.sys`). |
@@ -79,13 +80,13 @@ Existing tools show *what* takes up space, then leave you alone with the harder 
 
 ## Project status
 
-Working towards **`v0.1.0`** — Phases 1–2 are complete, Phase 3 is in progress.
+Working towards **`v0.1.0`** — Phases 1–3 are complete, Phase 4 is next.
 
 | Phase | Scope | Status |
 | :--- | :--- | :---: |
 | **1. Foundations** | Cargo workspace, Tauri v2 shell, IPC types generated from Rust, CI on 3 OSes | ✅ |
 | **2. Core** | Compact arena tree, multi-threaded scanner, viewport projection (Top-200 + Other) | ✅ |
-| **3. MVP integration** | Live scan ✅ · treemap on real data ✅ · app shell 🚧 · space reconciliation · safe trash | 🚧 |
+| **3. MVP integration** | Live scan, treemap on real data, app shell, space reconciliation, safe file actions | ✅ |
 | **4. Dev Junk and release** | Dev Junk engine and tab, `Ctrl+K` search, `v0.1.0` release | 🗓️ |
 
 <details>
@@ -100,6 +101,9 @@ Working towards **`v0.1.0`** — Phases 1–2 are complete, Phase 3 is in progre
 - **2.3** Viewport projection — Top-200 + Other with `select_nth_unstable`, size metric choice, breadcrumbs
 - **3.1** Drive list, folder picker, cancellable scan with live progress
 - **3.2** Treemap and list driven by `get_viewport` — drill-down, size metric toggle, stale-response rejection
+- **3.3** App shell — custom title bar, startup scan dialog, scan progress dialog, instant dark first paint
+- **3.4** Space reconciliation — “Unscanned / hidden” tile and an explanation panel with OS-specific causes and skipped paths
+- **3.5** Safe file actions — backend delete guard, pre-trash verification, per-item results, Undo, reveal in file manager, copy path
 
 </details>
 
@@ -110,9 +114,9 @@ Working towards **`v0.1.0`** — Phases 1–2 are complete, Phase 3 is in progre
 - [x] Core: arena tree, multi-threaded scanner, viewport projection
 - [x] Live scan with progress and cancellation
 - [x] Treemap and list on real data
-- [ ] App shell: custom title bar, startup dialog, scan progress dialog, loader
-- [ ] Space reconciliation (“unscanned / hidden” tile with an explanation)
-- [ ] Safe file actions: Move to Trash with backend guard, reveal in file manager, copy path
+- [x] App shell: custom title bar, startup dialog, scan progress dialog, loader
+- [x] Space reconciliation (“unscanned / hidden” tile with an explanation)
+- [x] Safe file actions: Move to Trash with backend guard, reveal in file manager, copy path
 - [ ] Dev Junk engine and cleanup tab
 - [ ] `Ctrl+K` search
 - [ ] Release: icons, installers for 3 OSes, portable `.exe`, `SHA256SUMS.txt`
@@ -185,8 +189,8 @@ npm run tauri build
 ```text
 disksieve/
 ├── crates/
-│   ├── disksieve-core/   # Pure Rust library: scanner, arena tree, viewport projection
-│   │                     # (later: Dev Junk, safety guard, duplicates, snapshots). No UI dependencies.
+│   ├── disksieve-core/   # Pure Rust library: scanner, arena tree, viewport projection, space balance,
+│   │                     # delete guard (later: Dev Junk, duplicates, snapshots). No UI dependencies.
 │   └── disksieve-cli/    # Terminal mode on the same core (placeholder until v0.4.0)
 ├── src-tauri/            # Thin desktop layer: IPC commands, app state, DTOs
 └── src/                  # React 19 + TypeScript + Tailwind CSS v4 + shadcn/ui + ECharts
@@ -203,6 +207,7 @@ disksieve/
                                                      │   disksieve-core     │
                                                      │ scanner → ScanTree   │
                                                      │ build_viewport()     │
+                                                     │ Guard → trash_nodes  │
                                                      └──────────────────────┘
 ```
 
@@ -218,7 +223,8 @@ Key design decisions:
 
 - **100% offline.** No telemetry, no accounts, no network connections (an optional update check will come in `v1.0.0`).
 - **Read-only scanning.** The scanner reads metadata only and never opens files. Cloud-only files (OneDrive, iCloud) are detected by attributes and never downloaded.
-- **Trash only.** Deletion (coming in `v0.1.0`) will only move items to the system Trash. Volume roots, the home folder, system paths and DiskSieve itself are refused by the backend, whatever the UI sends.
+- **Trash only.** Nothing is ever deleted permanently — items are moved to the system Trash after a confirmation. Volume roots, the home folder and its parents, system paths and files, DiskSieve itself, links and cloud-only files are refused by the backend, whatever the UI sends.
+- **Verified before trashing.** Each item is checked against the scan first (same type, size and modification time); if it changed, it is left alone and you are asked to rescan.
 - **Strict app sandbox.** Restrictive Content Security Policy, minimal Tauri permissions, `unsafe` Rust forbidden across the workspace.
 
 ## Performance targets

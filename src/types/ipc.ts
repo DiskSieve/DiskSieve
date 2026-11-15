@@ -8,5 +8,8 @@ export type { ScanProgressDto } from "./generated/ScanProgressDto";
 export type { ScanSummaryDto } from "./generated/ScanSummaryDto";
 export type { SizeMetricDto } from "./generated/SizeMetricDto";
 export type { SpaceBalanceDto } from "./generated/SpaceBalanceDto";
+export type { TrashErrorKindDto } from "./generated/TrashErrorKindDto";
+export type { TrashItemDto } from "./generated/TrashItemDto";
+export type { TrashReportDto } from "./generated/TrashReportDto";
 export type { TreemapNodeDto } from "./generated/TreemapNodeDto";
 export type { ViewportDto } from "./generated/ViewportDto";

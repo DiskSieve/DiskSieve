@@ -17,6 +17,10 @@ pub fn run() {
             commands::start_scan,
             commands::cancel_scan,
             commands::get_viewport,
+            commands::trash_nodes,
+            commands::restore_nodes,
+            commands::reveal_in_explorer,
+            commands::open_trash,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

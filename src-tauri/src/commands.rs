@@ -6,15 +6,18 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use disksieve_core::{
-    build_viewport, is_volume_root, CoreError, ScanOptions, SpaceBalance, ViewportOptions, ROOT,
+    build_viewport, is_volume_root, move_to_system_trash, restore_from_system_trash, CoreError,
+    Guard, ScanOptions, ScanTree, SpaceBalance, ViewportOptions, RESTORE_SUPPORTED, ROOT,
 };
 use sysinfo::{DiskKind, Disks};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_opener::OpenerExt;
 
 use crate::dto::{
-    AppInfoDto, DriveDto, ScanProgressDto, ScanSummaryDto, SizeMetricDto, ViewportDto,
+    AppInfoDto, DriveDto, ScanProgressDto, ScanSummaryDto, SizeMetricDto, TrashReportDto,
+    ViewportDto,
 };
 use crate::state::AppState;
 
@@ -125,19 +128,150 @@ pub async fn get_viewport(
     // `async` keeps the projection (up to ~200 ms for a directory with 1M entries) off the
     // main thread.
     let guard = state.tree();
-    let tree = guard.as_ref().ok_or("no scan results yet")?;
-    if tree.generation() != generation {
-        return Err(format!(
-            "stale scan generation {generation} (current: {})",
-            tree.generation()
-        ));
-    }
+    let tree = current(guard.as_ref(), generation)?;
     let opts = ViewportOptions {
         metric: metric.into(),
         ..ViewportOptions::default()
     };
     let view = build_viewport(tree, node_id.unwrap_or(ROOT), &opts).map_err(|e| e.to_string())?;
     Ok(ViewportDto::from_viewport(tree, &view))
+}
+
+/// Moves nodes of scan `generation` to the system Trash. Every node passes the backend guard
+/// and an on-disk check (unchanged since the scan) first; the tree is updated after each
+/// success, without a rescan. Returns one result per node — a failure never stops the rest.
+#[tauri::command]
+pub async fn trash_nodes(
+    app: AppHandle,
+    generation: u64,
+    node_ids: Vec<u32>,
+) -> Result<TrashReportDto, String> {
+    let guard = delete_guard(&app);
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let mut slot = state.tree_mut();
+        let tree = current_mut(slot.as_mut(), generation)?;
+        let outcomes = disksieve_core::trash_nodes(tree, &node_ids, &guard, move_to_system_trash);
+        Ok(TrashReportDto::new(
+            generation,
+            &outcomes,
+            RESTORE_SUPPORTED,
+        ))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Restores nodes moved to Trash by `trash_nodes` ("Undo"; Windows and Linux only).
+#[tauri::command]
+pub async fn restore_nodes(
+    app: AppHandle,
+    generation: u64,
+    node_ids: Vec<u32>,
+) -> Result<TrashReportDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let mut slot = state.tree_mut();
+        let tree = current_mut(slot.as_mut(), generation)?;
+        let outcomes = disksieve_core::restore_nodes(tree, &node_ids, restore_from_system_trash);
+        Ok(TrashReportDto::new(
+            generation,
+            &outcomes,
+            RESTORE_SUPPORTED,
+        ))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Opens the system file manager with the node selected.
+#[tauri::command]
+pub async fn reveal_in_explorer(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    generation: u64,
+    node_id: u32,
+) -> Result<(), String> {
+    let path = {
+        let guard = state.tree();
+        let tree = current(guard.as_ref(), generation)?;
+        let node = tree.node(node_id).map_err(|e| e.to_string())?;
+        if node.is_trashed() {
+            return Err("this item was moved to Trash".into());
+        }
+        tree.resolve_path(node_id).map_err(|e| e.to_string())?
+    };
+    tauri::async_runtime::spawn_blocking(move || app.opener().reveal_item_in_dir(path))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+/// Opens the Trash in Finder (macOS, where items cannot be restored programmatically).
+#[tauri::command]
+pub fn open_trash(app: AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let trash = app
+            .path()
+            .home_dir()
+            .map_err(|e| e.to_string())?
+            .join(".Trash");
+        app.opener()
+            .open_path(trash.to_string_lossy(), None::<&str>)
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Err("opening the Trash is only needed on macOS".into())
+    }
+}
+
+/// The tree of scan `generation`; fails when nothing was scanned or the generation is stale,
+/// so node ids from an older scan can never address nodes of a newer tree.
+fn current(tree: Option<&ScanTree>, generation: u64) -> Result<&ScanTree, String> {
+    let tree = tree.ok_or("no scan results yet")?;
+    ensure_generation(tree, generation)?;
+    Ok(tree)
+}
+
+fn current_mut(tree: Option<&mut ScanTree>, generation: u64) -> Result<&mut ScanTree, String> {
+    let tree = tree.ok_or("no scan results yet")?;
+    ensure_generation(tree, generation)?;
+    Ok(tree)
+}
+
+fn ensure_generation(tree: &ScanTree, generation: u64) -> Result<(), String> {
+    if tree.generation() == generation {
+        Ok(())
+    } else {
+        Err(format!(
+            "stale scan generation {generation} (current: {})",
+            tree.generation()
+        ))
+    }
+}
+
+/// Delete guard protecting the home folder and DiskSieve's own install and data folders.
+fn delete_guard(app: &AppHandle) -> Guard {
+    let paths = app.path();
+    let app_dirs = [
+        paths.app_data_dir(),
+        paths.app_local_data_dir(),
+        paths.app_config_dir(),
+        paths.app_cache_dir(),
+        paths.app_log_dir(),
+        paths.resource_dir(),
+    ]
+    .into_iter()
+    .filter_map(Result::ok)
+    .chain(
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf)),
+    );
+    Guard::new(paths.home_dir().ok(), app_dirs)
 }
 
 /// Space balance when `root` is the mount point of a volume; `None` for a folder scan.
