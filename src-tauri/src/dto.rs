@@ -8,6 +8,8 @@
 use disksieve_core::{
     Node, NodeFlags, NodeId, OtherBucket, ScanProgress, ScanTree, SizeMetric, Viewport, ROOT,
 };
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -78,10 +80,15 @@ pub struct ScanProgressDto {
     pub skipped_entries: u64,
     /// Directory processed most recently (display only).
     pub current_dir: String,
+    /// Time since the scan started.
+    #[ts(type = "number")]
+    pub elapsed_ms: u64,
+    /// Worker threads reading directories.
+    pub threads: u32,
 }
 
 impl ScanProgressDto {
-    pub fn new(generation: u64, p: &ScanProgress) -> Self {
+    pub fn new(generation: u64, p: &ScanProgress, elapsed: Duration, threads: usize) -> Self {
         Self {
             generation,
             files: p.files,
@@ -89,6 +96,8 @@ impl ScanProgressDto {
             allocated_bytes: p.allocated_bytes,
             skipped_entries: p.skipped_entries,
             current_dir: p.current_dir.to_string_lossy().into_owned(),
+            elapsed_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+            threads: u32::try_from(threads).unwrap_or(u32::MAX),
         }
     }
 }
@@ -318,7 +327,6 @@ mod tests {
     use super::*;
     use disksieve_core::{build_viewport, EntryMeta, TreeBuilder, ViewportOptions};
     use std::ffi::OsStr;
-    use std::time::Duration;
 
     #[test]
     fn viewport_maps_items_breadcrumbs_and_other() {

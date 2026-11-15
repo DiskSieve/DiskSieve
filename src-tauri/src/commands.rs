@@ -3,6 +3,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use disksieve_core::{build_viewport, CoreError, ScanOptions, ViewportOptions, ROOT};
 use sysinfo::{DiskKind, Disks};
@@ -62,10 +63,17 @@ pub async fn start_scan(
             generation: handle.generation,
             ..ScanOptions::default()
         };
+        let threads = opts.effective_threads();
+        let started = Instant::now();
         // The scanner already throttles callbacks to `progress_interval` (100 ms).
         let outcome = disksieve_core::scan(&root, &opts, &handle.cancel, |p| {
             if on_progress
-                .send(ScanProgressDto::new(handle.generation, p))
+                .send(ScanProgressDto::new(
+                    handle.generation,
+                    p,
+                    started.elapsed(),
+                    threads,
+                ))
                 .is_err()
             {
                 // The window is gone; nobody is waiting for this scan.

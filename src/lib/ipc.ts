@@ -48,10 +48,12 @@ async function call<K extends keyof Commands>(
 }
 
 // ── Browser fallback (demo data) ───────────────────────────────────────────────
-const MOCK_SCAN_MS = 800;
+const MOCK_SCAN_MS = 2500;
+const MOCK_THREADS = typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 8 : 8;
 let mockGeneration = 0;
 let cancelMockScan: (() => void) | null = null;
 let mockTree: FsNode = initialDrive;
+const MOCK_DIRS = ["Windows\\System32", "Users\\dev\\AppData\\Local", "Program Files", "Users\\dev\\Projects", "Games\\Steam\\steamapps", "Users\\dev\\Downloads"];
 
 /** Lets the demo's in-memory "trash" change the tree the mock viewport is built from. */
 export const setMockTree = (tree: FsNode) => {
@@ -121,7 +123,7 @@ const mock = {
     durationMs,
   }),
 
-  /** Simulated scan: progress every 100 ms for ~0.8 s, cancellable like the real one. */
+  /** Simulated scan: progress every 100 ms for ~2.5 s, cancellable like the real one. */
   scan: (path: string, onProgress: (p: ScanProgressDto) => void): Promise<ScanSummaryDto | null> => {
     cancelMockScan?.();
     const generation = ++mockGeneration;
@@ -141,7 +143,9 @@ const mock = {
           dirs: Math.round((TOTAL_FILES / 9) * f),
           allocatedBytes: Math.round(initialDrive.sizeBytes * f),
           skippedEntries: f > 0.5 ? 3 : 0,
-          currentDir: path,
+          currentDir: f < 1 ? `${path}${MOCK_DIRS[Math.floor(f * MOCK_DIRS.length) % MOCK_DIRS.length]}` : path,
+          elapsedMs: Math.round(performance.now() - t0),
+          threads: MOCK_THREADS,
         });
         if (f < 1) {
           timer = setTimeout(tick, 100);
@@ -180,9 +184,6 @@ function mockViewport(generation: number, nodeId: number | null, metric: SizeMet
     nodes,
   };
 }
-
-/** Summary shown in the browser demo before any scan is started. */
-export const demoSummary = (): ScanSummaryDto => mock.summary("C:\\", 0, 1420);
 
 // ── Public API ─────────────────────────────────────────────────────────────────
 /** Static information about the running application. */
