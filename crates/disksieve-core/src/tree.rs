@@ -79,7 +79,8 @@ pub struct Node {
     pub first_child: NodeId,
     pub next_sibling: NodeId,
     pub flags: NodeFlags,
-    /// `JunkKind` as `u8` (0 = not junk). Filled in by dev-junk detection.
+    /// Dev-junk mark filled in by `dev_junk::detect_junk`: low 7 bits = `JunkKind` code
+    /// (0 = not an artifact), high bit = an artifact lies somewhere below this folder.
     pub junk: u8,
     /// Logical size in bytes (directory: whole subtree).
     pub logical_size: u64,
@@ -556,7 +557,7 @@ impl ScanTree {
         Ok(())
     }
 
-    /// Sets the dev-junk kind of a node (`JunkKind as u8`, 0 = none). Ignores invalid ids.
+    /// Sets the dev-junk mark of a node (see [`Node::junk`]). Ignores invalid ids.
     pub fn set_junk(&mut self, id: NodeId, junk: u8) {
         if let Some(n) = self.nodes.get_mut(id as usize) {
             n.junk = junk;

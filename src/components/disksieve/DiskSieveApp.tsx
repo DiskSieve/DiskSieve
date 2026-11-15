@@ -1,22 +1,24 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ArrowUp, ChevronRight, Copy, File, Folder, FolderOpen, HardDrive, Layers, ShieldAlert, ShieldCheck, RefreshCw, Trash2, Eye, ExternalLink } from "lucide-react";
-import { findPath, flatten, hintFor, initialDrive, removeNode, type FsNode, type JunkTag } from "@/data/mockDrive";
+import { findPath, flatten, hintFor, initialDrive, removeNode, type FsNode } from "@/data/mockDrive";
 import { copyText } from "@/lib/clipboard";
+import { junkHint } from "@/lib/junk";
+import type { TrashTarget } from "@/lib/trash";
 import { formatBytes, formatMtime } from "@/lib/format";
 import { legendFor, type ColorMode } from "@/lib/treemap-palette";
 import { TitleBar } from "./TitleBar";
 import { ScanProgressDialog, ScanTargetDialog, formatDuration, usedBytes } from "./ScanDialogs";
 import { SpaceBalanceSheet, SpaceBalanceTile } from "./SpaceBalance";
 import { Treemap, otherLabel } from "./Treemap";
-import { DevJunkView, type JunkRow } from "./DevJunkView";
+import { DevJunkView } from "./DevJunkView";
 import { DuplicatesView, initialDuplicates, wastedBytes } from "./DuplicatesView";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "@/components/ui/breadcrumb";
+import { PathBreadcrumb } from "./PathBreadcrumb";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { buttonVariants } from "@/components/ui/button";
@@ -25,8 +27,8 @@ import { CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, C
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
-import { appInfo, cancelScan, demoNodeDto, getViewport, isTauri, listDrives, mockNodeId, openTrash, pickFolder, restoreNodes, revealInExplorer, setMockTree, startScan, trashNodes } from "@/lib/ipc";
-import type { AppInfoDto, DriveDto, ScanProgressDto, ScanSummaryDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
+import { appInfo, cancelScan, demoNodeDto, getDevJunk, getViewport, isTauri, listDrives, mockNodeId, openTrash, pickFolder, restoreNodes, revealInExplorer, setMockTree, startScan, trashNodes } from "@/lib/ipc";
+import type { AppInfoDto, DevJunkDto, DriveDto, ScanProgressDto, ScanSummaryDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
 
 type Tab = "explorer" | "junk" | "dups";
 const MODES: { key: ColorMode; label: string }[] = [{ key: "extension", label: "By Extension" }, { key: "age", label: "Cold Data (Age)" }, { key: "junk", label: "Dev Junk" }];
@@ -47,8 +49,10 @@ const PROTECTED_FLAGS: Record<string, string> = { cloudOnline: "Online-only clou
 const nodeLabel = (n: TreemapNodeDto) => (n.id === null ? otherLabel(n) : n.name);
 const revealLabel = (os: string) => (os === "macos" ? "Reveal in Finder" : os === "linux" ? "Show in File Manager" : "Show in File Explorer");
 const protectedReason = (n: TreemapNodeDto) => n.flags.map((f) => PROTECTED_FLAGS[f]).find(Boolean) ?? null;
+/** "Can I delete this?" text: Dev Junk recovery hint first, then the demo name-based hints. */
+const safetyHint = (n: TreemapNodeDto) => junkHint(n.junkKind) ?? hintFor(n.name);
 /** UI hint only — the backend guard decides; system items and protected flags start disabled. */
-const trashBlocked = (n: TreemapNodeDto) => !!protectedReason(n) || hintFor(n.name, (n.junkKind ?? null) as JunkTag).startsWith("SYSTEM");
+const trashBlocked = (n: TreemapNodeDto) => !!protectedReason(n) || safetyHint(n).startsWith("SYSTEM");
 const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 
 /** Applies a trash (`sign = -1`) or restore (`+1`) report to the scan totals. */
@@ -84,7 +88,10 @@ export function DiskSieveApp() {
   const viewSeq = useRef(0);
   // Bumped after trash / restore so the projection is fetched again from the updated tree.
   const [treeVersion, setTreeVersion] = useState(0);
-  const [confirmTrash, setConfirmTrash] = useState<TreemapNodeDto[] | null>(null);
+  const [confirmTrash, setConfirmTrash] = useState<TrashTarget[] | null>(null);
+  // Dev Junk of the current scan (refetched with the viewport after trash / restore).
+  const [devJunk, setDevJunk] = useState<DevJunkDto | null>(null);
+  const [devJunkError, setDevJunkError] = useState<string | null>(null);
   const generation = summary?.generation ?? null;
   const os = info?.os ?? "";
 
@@ -113,6 +120,21 @@ export function DiskSieveApp() {
         setViewportError(e.message);
       });
   }, [generation, currentId, metric, tree, treeVersion]);
+  useEffect(() => {
+    if (generation === null) {
+      setDevJunk(null);
+      return;
+    }
+    let live = true;
+    getDevJunk(generation)
+      .then((dj) => {
+        if (!live || dj.generation !== generation) return;
+        setDevJunk(dj);
+        setDevJunkError(null);
+      })
+      .catch((e: Error) => { if (live) setDevJunkError(e.message); });
+    return () => { live = false; };
+  }, [generation, tree, treeVersion]);
 
   const all = useMemo(() => flatten(tree), [tree]);
   const breadcrumbs = viewport?.breadcrumbs ?? [];
@@ -124,8 +146,6 @@ export function DiskSieveApp() {
   const folderTotal = items.reduce((a, n) => a + Math.max(valueOf(n), 0), 0) || 1;
   const currentTotal = delta ? items.reduce((a, n) => a + valueOf(n), 0) : viewport?.totalValue ?? 0;
   const itemCount = items.reduce((a, n) => a + (n.id === null ? n.otherCount ?? 0 : 1), 0);
-  const junkRows: JunkRow[] = useMemo(() => all.filter((n) => n.junkTag && n.path.includes("\\Projects\\")).map((n) => ({ node: n, project: n.path.split("\\").slice(-2)[0] ?? "" })), [all]);
-  const junkTotal = junkRows.reduce((a, r) => a + r.node.sizeBytes, 0);
 
   /** Demo trash: removes nodes from the in-memory demo tree. */
   const trash = useCallback((nodes: FsNode[]) => {
@@ -154,7 +174,7 @@ export function DiskSieveApp() {
   };
 
   /** Moves confirmed nodes to Trash: the backend checks each one and reports per item. */
-  const moveToTrash = (nodes: TreemapNodeDto[]) => {
+  const moveToTrash = (nodes: TrashTarget[]) => {
     if (!isTauri()) {
       const demo = nodes.map((n) => all.find((f) => mockNodeId(f) === n.id)).filter((f): f is FsNode => !!f);
       if (demo.length) trash(demo);
@@ -185,7 +205,7 @@ export function DiskSieveApp() {
       .catch((e: Error) => toast.error("Could not move to Trash", { description: e.message }));
   };
 
-  const reveal = (n: TreemapNodeDto) => {
+  const reveal = (n: Pick<TrashTarget, "id" | "path">) => {
     if (n.id === null) return;
     if (!isTauri() || generation === null) {
       toast(`${revealLabel(os)} works in the desktop app`, { description: n.path });
@@ -327,7 +347,7 @@ export function DiskSieveApp() {
           <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)} className="order-last w-full lg:order-none lg:mx-auto lg:w-auto">
             <TabsList className="h-9 w-full lg:w-auto">
               <TabsTrigger value="explorer" className="flex-1 text-xs">Explorer</TabsTrigger>
-              <TabsTrigger value="junk" className="flex-1 gap-1.5 text-xs">Dev Junk <Badge className="h-4 px-1.5 font-mono text-[10px]">{formatBytes(junkTotal)}</Badge></TabsTrigger>
+              <TabsTrigger value="junk" className="flex-1 gap-1.5 text-xs">Dev Junk <Badge className="h-4 px-1.5 font-mono text-[10px]">{devJunk ? formatBytes(devJunk.allocatedBytes) : "—"}</Badge></TabsTrigger>
               <TabsTrigger value="dups" className="flex-1 gap-1.5 text-xs">Duplicates <Badge variant="secondary" className="h-4 px-1.5 font-mono text-[10px]">{formatBytes(wastedBytes(dups))}</Badge></TabsTrigger>
             </TabsList>
           </Tabs>
@@ -347,19 +367,7 @@ export function DiskSieveApp() {
             {/* Sub-toolbar */}
             <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2 md:gap-3 md:px-4 lg:h-14 lg:flex-nowrap lg:py-0">
               <Button size="icon" variant="ghost" className="h-8 w-8" disabled={breadcrumbs.length < 2} onClick={() => setCurrentId(breadcrumbs[breadcrumbs.length - 2]!.id)} aria-label="Up one level"><ArrowUp className="h-4 w-4" /></Button>
-              <Breadcrumb className="min-w-0 flex-1 overflow-x-auto">
-                <BreadcrumbList className="flex-nowrap whitespace-nowrap text-xs">
-                  {breadcrumbs.map((b, i) => (
-                    <span key={b.id} className="contents">
-                      {i > 0 && <BreadcrumbSeparator />}
-                      <BreadcrumbItem>
-                        {i === breadcrumbs.length - 1 ? <BreadcrumbPage className="font-mono">{b.name}</BreadcrumbPage>
-                          : <BreadcrumbLink className="cursor-pointer font-mono" onClick={() => setCurrentId(b.id)}>{b.name}</BreadcrumbLink>}
-                      </BreadcrumbItem>
-                    </span>
-                  ))}
-                </BreadcrumbList>
-              </Breadcrumb>
+              <PathBreadcrumb crumbs={breadcrumbs} onNavigate={setCurrentId} />
               <div className="flex max-w-full overflow-x-auto rounded-md border border-border bg-card p-0.5" role="group" aria-label="Size metric">
                 {METRICS.map((m) => (
                   <Tooltip key={m.key}><TooltipTrigger asChild>
@@ -455,7 +463,8 @@ export function DiskSieveApp() {
             )}
           </>
         )}
-        {tab === "junk" && <DevJunkView rows={junkRows} onTrash={trash} />}
+        {tab === "junk" && <DevJunkView data={devJunk} error={devJunkError} scanned={generation !== null} revealLabel={revealLabel(os)}
+          onTrash={setConfirmTrash} onReveal={(id, path) => reveal({ id, path })} onScan={() => setTargetOpen(true)} />}
         {tab === "dups" && <DuplicatesView groups={dups} setGroups={setDups} />}
 
         {/* Inspector */}
@@ -509,7 +518,7 @@ export function DiskSieveApp() {
   );
 }
 
-function TrashConfirmDialog({ nodes, os, onCancel, onConfirm }: { nodes: TreemapNodeDto[] | null; os: string; onCancel: () => void; onConfirm: () => void }) {
+function TrashConfirmDialog({ nodes, os, onCancel, onConfirm }: { nodes: TrashTarget[] | null; os: string; onCancel: () => void; onConfirm: () => void }) {
   const list = nodes ?? [];
   const bytes = list.reduce((a, n) => a + n.allocatedSize, 0);
   const files = list.reduce((a, n) => a + n.fileCount, 0);
@@ -544,7 +553,7 @@ function TrashConfirmDialog({ nodes, os, onCancel, onConfirm }: { nodes: Treemap
 }
 
 function Inspector({ n, os, onTrash, onCopy, onReveal }: { n: TreemapNodeDto; os: string; onTrash: () => void; onCopy: () => void; onReveal: () => void }) {
-  const hint = hintFor(n.name, (n.junkKind ?? null) as JunkTag);
+  const hint = safetyHint(n);
   const blocked = protectedReason(n);
   const system = hint.startsWith("SYSTEM");
   const safe = hint.startsWith("Safe");

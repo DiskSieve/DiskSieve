@@ -3,8 +3,8 @@
 // Inside the desktop app every call goes to Rust. In a plain browser (`npm run dev`) there is
 // no Tauri runtime, so the same functions resolve with demo data — the UI code never branches.
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { AppInfoDto, DriveDto, ScanProgressDto, ScanSummaryDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
-import { DRIVE_CAPACITY, TOTAL_FILES, findPath, flatten, initialDrive, type FsNode } from "@/data/mockDrive";
+import type { AppInfoDto, DevJunkDto, DriveDto, JunkProjectDto, ScanProgressDto, ScanSummaryDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
+import { DRIVE_CAPACITY, TOTAL_FILES, findPath, flatten, initialDrive, type FsNode, type JunkTag } from "@/data/mockDrive";
 import { CONTAINS_JUNK_FLAG } from "@/lib/treemap-palette";
 import { version as appVersion } from "../../package.json";
 
@@ -31,6 +31,7 @@ interface Commands {
   start_scan: { args: { path: string; onProgress: Channel<ScanProgressDto> }; result: ScanSummaryDto | null };
   cancel_scan: { args: NoArgs; result: boolean };
   get_viewport: { args: { generation: number; nodeId: number | null; metric: SizeMetricDto }; result: ViewportDto };
+  get_dev_junk: { args: { generation: number }; result: DevJunkDto };
   trash_nodes: { args: { generation: number; nodeIds: number[] }; result: TrashReportDto };
   restore_nodes: { args: { generation: number; nodeIds: number[] }; result: TrashReportDto };
   reveal_in_explorer: { args: { generation: number; nodeId: number }; result: null };
@@ -69,7 +70,12 @@ export const setMockTree = (tree: FsNode) => {
 
 /** Numeric id of a demo node (`"n42"` → 42). */
 export const mockNodeId = (n: FsNode) => Number(n.id.slice(1));
-const containsJunk = (n: FsNode): boolean => !!n.junkTag || !!n.children?.some(containsJunk);
+/** Demo tags → real `JunkKind` ids. Docker is a global tool cache (step 7.5), not project junk. */
+const MOCK_KIND: Record<Exclude<JunkTag, null>, string | null> = {
+  node_modules: "node_modules", cargo_target: "cargo_target", python_venv: "python_venv", gradle: "gradle_build", docker_cache: null,
+};
+const mockKind = (n: FsNode) => (n.junkTag ? MOCK_KIND[n.junkTag] : null);
+const containsJunk = (n: FsNode): boolean => !!mockKind(n) || !!n.children?.some(containsJunk);
 
 function mockNodeDto(n: FsNode, metric: SizeMetricDto, nowSecs: number): TreemapNodeDto {
   const allocatedSize = n.sizeBytes;
@@ -86,8 +92,8 @@ function mockNodeDto(n: FsNode, metric: SizeMetricDto, nowSecs: number): Treemap
     fileCount: n.fileCount,
     newestMtime: nowSecs - n.lastModifiedDaysAgo * 86_400,
     extension: n.isDir || !n.extension ? null : n.extension,
-    junkKind: n.junkTag,
-    flags: !n.junkTag && containsJunk(n) ? [CONTAINS_JUNK_FLAG] : [],
+    junkKind: mockKind(n),
+    flags: !mockKind(n) && containsJunk(n) ? [CONTAINS_JUNK_FLAG] : [],
     otherCount: null,
   };
 }
@@ -205,6 +211,38 @@ function mockViewport(generation: number, nodeId: number | null, metric: SizeMet
   };
 }
 
+/** Demo Dev Junk, same shape and rules as `junk_projects` in Rust. */
+function mockDevJunk(generation: number): DevJunkDto {
+  const nowSecs = Math.floor(Date.now() / 1000);
+  const projects = new Map<string, JunkProjectDto>();
+  for (const n of flatten(mockTree)) {
+    const kind = mockKind(n);
+    const trail = kind ? findPath(mockTree, n.id) : null;
+    const dir = trail?.[trail.length - 2];
+    if (!kind || !dir) continue;
+    const logical = Math.round(n.sizeBytes * 0.985);
+    let p = projects.get(dir.id);
+    if (!p) {
+      const daysAgo = Math.min(...(dir.children ?? []).filter((c) => !mockKind(c)).map((c) => c.lastModifiedDaysAgo));
+      p = { id: mockNodeId(dir), name: dir.name, path: dir.path, newestMtime: Number.isFinite(daysAgo) ? nowSecs - daysAgo * 86_400 : 0, allocatedBytes: 0, logicalBytes: 0, fileCount: 0, artifacts: [] };
+      projects.set(dir.id, p);
+    }
+    p.artifacts.push({ id: mockNodeId(n), name: n.name, relPath: n.name, path: n.path, kind, allocatedBytes: n.sizeBytes, logicalBytes: logical, fileCount: n.fileCount });
+    p.allocatedBytes += n.sizeBytes;
+    p.logicalBytes += logical;
+    p.fileCount += n.fileCount;
+  }
+  const list = [...projects.values()].sort((a, b) => b.allocatedBytes - a.allocatedBytes);
+  list.forEach((p) => p.artifacts.sort((a, b) => b.allocatedBytes - a.allocatedBytes));
+  return {
+    generation,
+    projects: list,
+    allocatedBytes: list.reduce((a, p) => a + p.allocatedBytes, 0),
+    logicalBytes: list.reduce((a, p) => a + p.logicalBytes, 0),
+    artifactCount: list.reduce((a, p) => a + p.artifacts.length, 0),
+  };
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────────
 /** Static information about the running application. */
 export const appInfo = (): Promise<AppInfoDto> =>
@@ -245,6 +283,10 @@ export const getViewport = (generation: number, nodeId: number | null, metric: S
     return Promise.reject(e);
   }
 };
+
+/** Dev Junk of scan `generation`: projects with rebuildable artifacts, largest first. */
+export const getDevJunk = (generation: number): Promise<DevJunkDto> =>
+  isTauri() ? call("get_dev_junk", { generation }) : Promise.resolve(mockDevJunk(generation));
 
 /** Cancels the scan in progress; `false` when nothing was running. */
 export const cancelScan = (): Promise<boolean> => {

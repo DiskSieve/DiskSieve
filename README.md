@@ -69,7 +69,7 @@ Existing tools show *what* takes up space, then leave you alone with the harder 
 | ✅ | **Space reconciliation** | “The disk reports 812 GB used, the scan sees 776 GB — here is where the other 36 GB are” (restore points, shadow copies, folders without access). |
 | ✅ | **Safe Move to Trash** | System Trash only, protected paths enforced in the backend, each item re-checked against the scan before it is moved, instant tree update without rescanning, Undo on Windows and Linux. |
 | ✅ | **File actions** | Right-click any tile or row: inspect, show in File Explorer / Finder, copy the full path, move to Trash. |
-| 🗓️ | **Dev Junk** | Build artifacts detected by project marker files (no false hits on any random `build/` folder), grouped by project and its age. |
+| ✅ | **Dev Junk** | Build artifacts detected by project marker files (no false hits on any random `build/` folder or inside installed apps), grouped by project and its age, cleaned in bulk via the Trash. |
 | 🗓️ | **Search (`Ctrl+K`)** | Instant name search in the scanned tree — no disk access. |
 | 🗓️ | **Safety Advisor** | A verdict for every item (*safe* / *review* / *system*) with an explanation and a safe alternative (e.g. `powercfg -h off` instead of deleting `hiberfil.sys`). |
 | 🗓️ | **Sieve Basket** | Collect items from every view, see the total space reclaimed and safety warnings, then trash them in one go. |
@@ -105,6 +105,7 @@ Working towards **`v0.1.0`** — Phases 1–3 are complete, Phase 4 is in progre
 - **3.4** Space reconciliation — “Unscanned / hidden” tile and an explanation panel with OS-specific causes and skipped paths
 - **3.5** Safe file actions — backend delete guard, pre-trash verification, per-item results, Undo, reveal in file manager, copy path
 - **4.1** Dev Junk engine — build artifacts confirmed by project marker files, grouped by project, project age that ignores the artifacts, nested artifacts counted once
+- **4.2** Dev Junk tab — projects with their artifacts, filters (untouched > 90 days, by kind), bulk Move to Trash, `junk` treemap color mode
 
 </details>
 
@@ -118,7 +119,7 @@ Working towards **`v0.1.0`** — Phases 1–3 are complete, Phase 4 is in progre
 - [x] App shell: custom title bar, startup dialog, scan progress dialog, loader
 - [x] Space reconciliation (“unscanned / hidden” tile with an explanation)
 - [x] Safe file actions: Move to Trash with backend guard, reveal in file manager, copy path
-- [ ] Dev Junk engine and cleanup tab
+- [x] Dev Junk engine and cleanup tab
 - [ ] `Ctrl+K` search
 - [ ] Release: icons, installers for 3 OSes, portable `.exe`, `SHA256SUMS.txt`
 
