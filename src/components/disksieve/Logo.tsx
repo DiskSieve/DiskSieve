@@ -1,6 +1,8 @@
-export function Logo() {
+import { cn } from "@/lib/utils";
+
+export function Logo({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 100 100" className="h-8 w-8 shrink-0" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="DiskSieve">
+    <svg viewBox="0 0 100 100" className={cn("h-8 w-8 shrink-0", className)} fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="DiskSieve">
       <rect width="100" height="100" rx="22" fill="#121413"/>
       <circle cx="50" cy="50" r="34" stroke="#22C55E" strokeWidth="4.5"/>
       <circle cx="50" cy="50" r="4.5" stroke="#22C55E" strokeWidth="2.5"/>

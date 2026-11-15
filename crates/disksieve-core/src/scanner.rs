@@ -68,6 +68,17 @@ impl Default for ScanOptions {
     }
 }
 
+impl ScanOptions {
+    /// Number of worker threads the scan will use (`threads`, or one per logical CPU).
+    pub fn effective_threads(&self) -> usize {
+        if self.threads > 0 {
+            self.threads
+        } else {
+            std::thread::available_parallelism().map_or(1, |n| n.get())
+        }
+    }
+}
+
 /// Snapshot passed to the progress callback.
 #[derive(Debug, Clone, Default)]
 pub struct ScanProgress {
@@ -102,7 +113,7 @@ pub fn scan(
     }
     let volume = Arc::new(Volume::of(root, &root_meta));
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(opts.threads)
+        .num_threads(opts.effective_threads())
         .thread_name(|i| format!("disksieve-scan-{i}"))
         .build()
         .map_err(|e| CoreError::io(root, io::Error::other(e)))?;
@@ -441,6 +452,16 @@ mod tests {
     fn write_file(path: &Path, len: usize) {
         let mut f = File::create(path).unwrap();
         f.write_all(&vec![0xAB; len]).unwrap();
+    }
+
+    #[test]
+    fn effective_threads_uses_explicit_count_or_cpu_count() {
+        let explicit = ScanOptions {
+            threads: 3,
+            ..ScanOptions::default()
+        };
+        assert_eq!(explicit.effective_threads(), 3);
+        assert!(ScanOptions::default().effective_threads() >= 1);
     }
 
     fn run(root: &Path) -> ScanTree {

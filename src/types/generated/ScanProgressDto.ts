@@ -11,4 +11,12 @@ allocatedBytes: number, skippedEntries: number,
 /**
  * Directory processed most recently (display only).
  */
-currentDir: string, };
+currentDir: string, 
+/**
+ * Time since the scan started.
+ */
+elapsedMs: number, 
+/**
+ * Worker threads reading directories.
+ */
+threads: number, };

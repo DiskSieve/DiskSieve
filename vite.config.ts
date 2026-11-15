@@ -24,6 +24,8 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
+    // Pre-transform the startup module graph so the first window load doesn't wait on it.
+    warmup: { clientFiles: ["./src/boot.ts", "./src/main.tsx"] },
     host: host || false,
     hmr: host
       ? {
