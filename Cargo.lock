@@ -896,7 +896,6 @@ dependencies = [
  "filesize",
  "fs4",
  "rayon",
- "serde",
  "tempfile",
  "thiserror 2.0.21",
  "trash",

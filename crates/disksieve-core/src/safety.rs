@@ -701,14 +701,14 @@ mod tests {
 
     #[test]
     fn home_and_its_ancestors_are_refused_but_contents_allowed() {
-        let home = TempDir::new().unwrap();
-        let guard = Guard::new(Some(home.path().to_owned()), []);
-        assert_eq!(guard.check_path(home.path()), Err(Refusal::HomeDirectory));
-        assert_eq!(
-            guard.check_path(home.path().parent().unwrap()),
-            Err(Refusal::HomeDirectory)
-        );
-        assert_eq!(guard.check_path(&home.path().join("Downloads")), Ok(()));
+        // The home lives one level below the temp dir, so its parent is our own folder and
+        // not the system temp root (`/tmp` on Linux is itself a protected system location).
+        let base = TempDir::new().unwrap();
+        let home = base.path().join("user");
+        let guard = Guard::new(Some(home.clone()), []);
+        assert_eq!(guard.check_path(&home), Err(Refusal::HomeDirectory));
+        assert_eq!(guard.check_path(base.path()), Err(Refusal::HomeDirectory));
+        assert_eq!(guard.check_path(&home.join("Downloads")), Ok(()));
     }
 
     #[test]

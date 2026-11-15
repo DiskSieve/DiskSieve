@@ -13,7 +13,6 @@ authors.workspace = true
 [dependencies]
 bitflags.workspace = true
 rayon.workspace = true
-serde.workspace = true
 thiserror.workspace = true
 trash.workspace = true
 
