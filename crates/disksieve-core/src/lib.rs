@@ -9,6 +9,7 @@
 pub mod aggregator;
 pub mod balance;
 pub mod error;
+pub mod safety;
 pub mod scanner;
 pub mod tree;
 
@@ -18,6 +19,10 @@ pub use aggregator::{
 };
 pub use balance::{is_volume_root, SpaceBalance};
 pub use error::{CoreError, CoreResult};
+pub use safety::{
+    move_to_system_trash, restore_from_system_trash, restore_nodes, trash_nodes, verify_unchanged,
+    Freed, Guard, Refusal, TrashError, TrashOutcome, RESTORE_SUPPORTED,
+};
 pub use scanner::{scan, CancelToken, ScanOptions, ScanProgress};
 pub use tree::{
     EntryMeta, Node, NodeFlags, NodeId, ScanStats, ScanTree, TreeBuilder, NO_NODE, ROOT,

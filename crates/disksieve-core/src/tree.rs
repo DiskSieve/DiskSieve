@@ -8,13 +8,13 @@
 //! Lifecycle:
 //! 1. the scanner feeds entries into a [`TreeBuilder`] (parents always before children);
 //! 2. [`TreeBuilder::finish`] sums sizes bottom-up and sorts every child list by size;
-//! 3. the resulting [`ScanTree`] is read-only, except for [`ScanTree::mark_trashed`], which
-//!    keeps sums and ordering correct without a rescan.
+//! 3. the resulting [`ScanTree`] is read-only, except for [`ScanTree::mark_trashed`] and
+//!    [`ScanTree::restore_trashed`], which keep sums and ordering correct without a rescan.
 //!
 //! These types are internal to the core and are never serialized to the UI.
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -126,6 +126,9 @@ pub struct ScanStats {
     pub skipped_entries: u64,
     /// Up to [`MAX_SKIPPED_SAMPLES`] example paths of skipped entries.
     pub skipped_samples: Vec<PathBuf>,
+    /// When the scan started, as UNIX seconds. A directory modified later may have contents
+    /// the tree does not know about.
+    pub started_at: u32,
 }
 
 /// Metadata of one entry handed to [`TreeBuilder`].
@@ -156,6 +159,9 @@ pub struct ScanTree {
     extensions: Vec<Box<str>>,
     stats: ScanStats,
     generation: u64,
+    /// Directories whose entries DiskSieve itself changed (trash / restore), so a newer
+    /// directory mtime than the scan start is expected there.
+    touched: HashSet<NodeId>,
 }
 
 /// Builds a [`ScanTree`] entry by entry. Parents must be pushed before their children.
@@ -178,6 +184,7 @@ impl TreeBuilder {
                 extensions: vec!["".into()],
                 stats: ScanStats::default(),
                 generation,
+                touched: HashSet::new(),
             },
             ext_index: HashMap::new(),
         };
@@ -301,6 +308,9 @@ impl TreeBuilder {
     pub fn finish(mut self, duration: Duration) -> ScanTree {
         let tree = &mut self.tree;
         tree.stats.duration = duration;
+        tree.stats.started_at = SystemTime::now()
+            .checked_sub(duration)
+            .map_or(0, to_unix_secs);
 
         // Children always have a larger index than their parent, so one reverse pass
         // sees every subtree complete before it is added to the level above.
@@ -397,6 +407,11 @@ impl ScanTree {
 
     pub fn stats(&self) -> &ScanStats {
         &self.stats
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stats_mut(&mut self) -> &mut ScanStats {
+        &mut self.stats
     }
 
     /// Number of nodes, including the root.
@@ -506,22 +521,65 @@ impl ScanTree {
 
         let (logical, allocated, files) = node.contribution();
         self.nodes[id as usize].flags |= NodeFlags::TRASHED;
+        self.touched.insert(node.parent);
+        self.propagate(
+            id,
+            |total, delta| total.saturating_sub(delta),
+            (logical, allocated, files),
+        );
+        Ok(())
+    }
 
+    /// Reverses [`mark_trashed`](Self::mark_trashed) after the entry was restored from Trash:
+    /// adds its totals back to every ancestor and keeps the child lists sorted.
+    pub fn restore_trashed(&mut self, id: NodeId) -> CoreResult<()> {
+        let node = *self.node(id)?;
+        if !node.is_trashed() {
+            return Err(CoreError::NodeNotAllowed {
+                id,
+                reason: "not in Trash",
+            });
+        }
+        if self
+            .ancestors(id)
+            .any(|a| self.nodes[a as usize].is_trashed())
+        {
+            return Err(CoreError::NodeNotAllowed {
+                id,
+                reason: "a parent folder is in Trash",
+            });
+        }
+        self.nodes[id as usize].flags -= NodeFlags::TRASHED;
+        self.touched.insert(node.parent);
+        let delta = self.nodes[id as usize].contribution();
+        self.propagate(id, |total, delta| total.saturating_add(delta), delta);
+        Ok(())
+    }
+
+    /// Whether DiskSieve itself changed the entries of directory `id` since the scan.
+    pub fn is_touched(&self, id: NodeId) -> bool {
+        self.touched.contains(&id)
+    }
+
+    /// Applies `op(total, delta)` to the totals of every ancestor of `id` and re-sorts each
+    /// changed node among its siblings.
+    fn propagate(&mut self, id: NodeId, op: impl Fn(u64, u64) -> u64, delta: (u64, u64, u32)) {
+        let (logical, allocated, files) = delta;
         let mut child = id;
-        let mut current = node.parent;
+        let mut current = self.nodes[id as usize].parent;
         while current != NO_NODE {
             let n = &mut self.nodes[current as usize];
-            n.logical_size = n.logical_size.saturating_sub(logical);
-            n.allocated_size = n.allocated_size.saturating_sub(allocated);
-            n.file_count = n.file_count.saturating_sub(files);
+            n.logical_size = op(n.logical_size, logical);
+            n.allocated_size = op(n.allocated_size, allocated);
+            n.file_count =
+                u32::try_from(op(u64::from(n.file_count), u64::from(files))).unwrap_or(u32::MAX);
             let parent = n.parent;
             if child != id {
-                self.reposition_after_shrink(child);
+                self.reposition(child);
             }
             child = current;
             current = parent;
         }
-        Ok(())
     }
 
     /// Approximate heap + inline memory used by the tree, in bytes.
@@ -549,13 +607,13 @@ impl ScanTree {
             .then_with(|| self.name(a).cmp(self.name(b)))
     }
 
-    /// Moves `id` later in its parent's child list after its size decreased.
-    fn reposition_after_shrink(&mut self, id: NodeId) {
+    /// Moves `id` to its sorted place in the parent's child list after its size changed.
+    fn reposition(&mut self, id: NodeId) {
         let parent = self.nodes[id as usize].parent;
         if parent == NO_NODE {
             return;
         }
-        // Unlink `id`, remembering its predecessor.
+        // Unlink `id`.
         let next = self.nodes[id as usize].next_sibling;
         let mut prev = NO_NODE;
         let mut cursor = self.nodes[parent as usize].first_child;
@@ -568,8 +626,9 @@ impl ScanTree {
         } else {
             self.nodes[prev as usize].next_sibling = next;
         }
-        // It only shrank, so its new place is at or after the old one.
-        cursor = next;
+        // Insert before the first sibling that sorts after it.
+        prev = NO_NODE;
+        cursor = self.nodes[parent as usize].first_child;
         while cursor != NO_NODE && self.order(cursor, id) == Ordering::Less {
             prev = cursor;
             cursor = self.nodes[cursor as usize].next_sibling;
@@ -975,6 +1034,59 @@ mod tests {
             Err(CoreError::InvalidNode(_))
         ));
         assert_eq!(t.node(ROOT).unwrap().file_count, 2);
+    }
+
+    #[test]
+    fn restore_trashed_reverses_mark_trashed() {
+        let s = sample();
+        let mut t = s.tree;
+        let totals = |t: &ScanTree, id| {
+            let n = t.node(id).unwrap();
+            (n.logical_size, n.allocated_size, n.file_count)
+        };
+        let before = (totals(&t, ROOT), totals(&t, s.src));
+        let order_before: Vec<_> = t.children(ROOT).collect();
+        assert!(!t.is_touched(s.src));
+
+        t.mark_trashed(s.main_rs).unwrap();
+        t.mark_trashed(s.lib_rs).unwrap();
+        assert!(t.is_touched(s.src));
+        t.restore_trashed(s.lib_rs).unwrap();
+        t.restore_trashed(s.main_rs).unwrap();
+
+        assert!(!t.node(s.main_rs).unwrap().is_trashed());
+        assert_eq!((totals(&t, ROOT), totals(&t, s.src)), before);
+        // `src` grew back and moved in front of `small.txt` again.
+        assert_eq!(t.children(ROOT).collect::<Vec<_>>(), order_before);
+        assert_invariants(&t);
+    }
+
+    #[test]
+    fn restore_trashed_rejects_nodes_not_in_trash_or_under_trashed_parent() {
+        let s = sample();
+        let mut t = s.tree;
+        assert!(matches!(
+            t.restore_trashed(s.small),
+            Err(CoreError::NodeNotAllowed { .. })
+        ));
+        t.mark_trashed(s.main_rs).unwrap();
+        t.mark_trashed(s.src).unwrap();
+        assert!(matches!(
+            t.restore_trashed(s.main_rs),
+            Err(CoreError::NodeNotAllowed { .. })
+        ));
+        t.restore_trashed(s.src).unwrap();
+        // `main_rs` is still trashed on its own, so `src` comes back without it.
+        assert_eq!(t.node(s.src).unwrap().file_count, 1);
+        assert_invariants(&t);
+    }
+
+    #[test]
+    fn finish_records_scan_start() {
+        let s = sample();
+        let now = to_unix_secs(SystemTime::now());
+        let started = s.tree.stats().started_at;
+        assert!(started <= now && started + 5 >= now, "{started} vs {now}");
     }
 
     #[test]

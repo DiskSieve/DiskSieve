@@ -3,7 +3,7 @@
 // Inside the desktop app every call goes to Rust. In a plain browser (`npm run dev`) there is
 // no Tauri runtime, so the same functions resolve with demo data — the UI code never branches.
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { AppInfoDto, DriveDto, ScanProgressDto, ScanSummaryDto, SizeMetricDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
+import type { AppInfoDto, DriveDto, ScanProgressDto, ScanSummaryDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
 import { DRIVE_CAPACITY, TOTAL_FILES, findPath, flatten, initialDrive, type FsNode } from "@/data/mockDrive";
 import { CONTAINS_JUNK_FLAG } from "@/lib/treemap-palette";
 import { version as appVersion } from "../../package.json";
@@ -31,6 +31,10 @@ interface Commands {
   start_scan: { args: { path: string; onProgress: Channel<ScanProgressDto> }; result: ScanSummaryDto | null };
   cancel_scan: { args: NoArgs; result: boolean };
   get_viewport: { args: { generation: number; nodeId: number | null; metric: SizeMetricDto }; result: ViewportDto };
+  trash_nodes: { args: { generation: number; nodeIds: number[] }; result: TrashReportDto };
+  restore_nodes: { args: { generation: number; nodeIds: number[] }; result: TrashReportDto };
+  reveal_in_explorer: { args: { generation: number; nodeId: number }; result: null };
+  open_trash: { args: NoArgs; result: null };
 }
 
 /** Maximum number of individual nodes in a viewport (mirrors `DEFAULT_MAX_ITEMS` in Rust). */
@@ -249,3 +253,26 @@ export const cancelScan = (): Promise<boolean> => {
   cancelMockScan?.();
   return Promise.resolve(running);
 };
+
+// File actions exist only in the desktop app; the browser demo keeps its own in-memory trash
+// (see `DiskSieveApp`), so these reject outside Tauri.
+const desktopOnly = (command: string) => Promise.reject(new IpcError(command, "available in the desktop app"));
+
+/**
+ * Moves nodes of scan `generation` to the system Trash. The backend guard and an on-disk
+ * check run for every node; the result has one item per node (a failure never stops the rest).
+ */
+export const trashNodes = (generation: number, nodeIds: number[]): Promise<TrashReportDto> =>
+  isTauri() ? call("trash_nodes", { generation, nodeIds }) : desktopOnly("trash_nodes");
+
+/** Restores nodes moved to Trash in this session ("Undo"; Windows and Linux). */
+export const restoreNodes = (generation: number, nodeIds: number[]): Promise<TrashReportDto> =>
+  isTauri() ? call("restore_nodes", { generation, nodeIds }) : desktopOnly("restore_nodes");
+
+/** Opens the system file manager with the node selected. */
+export const revealInExplorer = (generation: number, nodeId: number): Promise<void> =>
+  isTauri() ? call("reveal_in_explorer", { generation, nodeId }).then(() => undefined) : desktopOnly("reveal_in_explorer");
+
+/** Opens the Trash in Finder (macOS). */
+export const openTrash = (): Promise<void> =>
+  isTauri() ? call("open_trash", {}).then(() => undefined) : desktopOnly("open_trash");

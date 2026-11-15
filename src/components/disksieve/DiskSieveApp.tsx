@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { toast } from "sonner";
 import { ArrowUp, ChevronRight, Copy, File, Folder, FolderOpen, HardDrive, Layers, ShieldAlert, ShieldCheck, RefreshCw, Trash2, Eye, ExternalLink } from "lucide-react";
 import { findPath, flatten, hintFor, initialDrive, removeNode, type FsNode, type JunkTag } from "@/data/mockDrive";
+import { copyText } from "@/lib/clipboard";
 import { formatBytes, formatMtime } from "@/lib/format";
 import { legendFor, type ColorMode } from "@/lib/treemap-palette";
 import { TitleBar } from "./TitleBar";
@@ -17,13 +18,15 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "@/components/ui/breadcrumb";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { buttonVariants } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandShortcut } from "@/components/ui/command";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
-import { appInfo, cancelScan, demoNodeDto, getViewport, isTauri, listDrives, mockNodeId, pickFolder, setMockTree, startScan } from "@/lib/ipc";
-import type { AppInfoDto, DriveDto, ScanProgressDto, ScanSummaryDto, SizeMetricDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
+import { appInfo, cancelScan, demoNodeDto, getViewport, isTauri, listDrives, mockNodeId, openTrash, pickFolder, restoreNodes, revealInExplorer, setMockTree, startScan, trashNodes } from "@/lib/ipc";
+import type { AppInfoDto, DriveDto, ScanProgressDto, ScanSummaryDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
 
 type Tab = "explorer" | "junk" | "dups";
 const MODES: { key: ColorMode; label: string }[] = [{ key: "extension", label: "By Extension" }, { key: "age", label: "Cold Data (Age)" }, { key: "junk", label: "Dev Junk" }];
@@ -38,7 +41,21 @@ type ScanState = { path: string; progress: ScanProgressDto | null; expectedBytes
 
 const FLAG_LABELS: Record<string, string> = { hardlink: "hard link", cloudOnline: "cloud only", accessDenied: "no access", reparse: "link", otherVolume: "other volume", nameLossy: "non-Unicode name" };
 
+/** Flags the backend guard always refuses to move to Trash. */
+const PROTECTED_FLAGS: Record<string, string> = { cloudOnline: "Online-only cloud file — remove it in the cloud app.", reparse: "Links, junctions and mount points are not moved to Trash.", otherVolume: "Belongs to another drive.", nameLossy: "The path contains a non-Unicode name." };
+
 const nodeLabel = (n: TreemapNodeDto) => (n.id === null ? otherLabel(n) : n.name);
+const revealLabel = (os: string) => (os === "macos" ? "Reveal in Finder" : os === "linux" ? "Show in File Manager" : "Show in File Explorer");
+const protectedReason = (n: TreemapNodeDto) => n.flags.map((f) => PROTECTED_FLAGS[f]).find(Boolean) ?? null;
+/** UI hint only — the backend guard decides; system items and protected flags start disabled. */
+const trashBlocked = (n: TreemapNodeDto) => !!protectedReason(n) || hintFor(n.name, (n.junkKind ?? null) as JunkTag).startsWith("SYSTEM");
+const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+
+/** Applies a trash (`sign = -1`) or restore (`+1`) report to the scan totals. */
+const adjustSummary = (s: ScanSummaryDto | null, r: TrashReportDto, sign: 1 | -1): ScanSummaryDto | null =>
+  s && s.generation === r.generation
+    ? { ...s, allocatedBytes: s.allocatedBytes + sign * r.allocatedBytes, logicalBytes: s.logicalBytes + sign * r.logicalBytes, fileCount: s.fileCount + sign * r.fileCount }
+    : s;
 
 export function DiskSieveApp() {
   // Demo-only data (browser mode): Dev Junk tab, Ctrl+K "largest items" and the in-memory trash.
@@ -65,7 +82,11 @@ export function DiskSieveApp() {
   const [viewport, setViewport] = useState<ViewportDto | null>(null);
   const [viewportError, setViewportError] = useState<string | null>(null);
   const viewSeq = useRef(0);
+  // Bumped after trash / restore so the projection is fetched again from the updated tree.
+  const [treeVersion, setTreeVersion] = useState(0);
+  const [confirmTrash, setConfirmTrash] = useState<TreemapNodeDto[] | null>(null);
   const generation = summary?.generation ?? null;
+  const os = info?.os ?? "";
 
   useEffect(() => {
     appInfo().then(setInfo).catch((e: Error) => toast.error("Could not reach the DiskSieve engine", { description: e.message }));
@@ -91,7 +112,7 @@ export function DiskSieveApp() {
         if (seq !== viewSeq.current) return;
         setViewportError(e.message);
       });
-  }, [generation, currentId, metric, tree]);
+  }, [generation, currentId, metric, tree, treeVersion]);
 
   const all = useMemo(() => flatten(tree), [tree]);
   const breadcrumbs = viewport?.breadcrumbs ?? [];
@@ -108,24 +129,69 @@ export function DiskSieveApp() {
 
   /** Demo trash: removes nodes from the in-memory demo tree. */
   const trash = useCallback((nodes: FsNode[]) => {
-    setTree((prev) => {
-      const next = nodes.reduce((t, n) => removeNode(t, n.id), prev);
-      const bytes = nodes.reduce((a, n) => a + n.sizeBytes, 0);
-      setTimeout(() => toast.success(nodes.length === 1 ? `Moved “${nodes[0]!.name}” to Trash` : `Moved ${nodes.length} items to Trash`, {
-        description: `${formatBytes(bytes)} reclaimed`, action: { label: "Undo", onClick: () => setTree(prev) },
-      }));
-      return next;
+    // Side effects stay outside the state updater (StrictMode runs updaters twice).
+    const prev = tree;
+    const bytes = nodes.reduce((a, n) => a + n.sizeBytes, 0);
+    setTree(nodes.reduce((t, n) => removeNode(t, n.id), prev));
+    toast.success(nodes.length === 1 ? `Moved “${nodes[0]!.name}” to Trash` : `Moved ${nodes.length} items to Trash`, {
+      description: `${formatBytes(bytes)} · disk space is freed when the Trash is emptied`, action: { label: "Undo", onClick: () => setTree(prev) }, duration: 8000,
     });
     setInspected(null);
-  }, []);
+  }, [tree]);
 
-  const trashNodes = (nodes: TreemapNodeDto[]) => {
-    if (isTauri()) {
-      toast("Move to Trash is not wired up yet", { description: "Safe deletion with backend checks arrives in the next update." });
+  /** "Undo" for a desktop trash: restores the items and puts them back into the tree. */
+  const undoTrash = (gen: number, ids: number[]) => {
+    restoreNodes(gen, ids)
+      .then((report) => {
+        setSummary((s) => adjustSummary(s, report, 1));
+        setTreeVersion((v) => v + 1);
+        const restored = report.items.filter((i) => !i.error);
+        const failed = report.items.filter((i) => i.error);
+        if (restored.length) toast.success(restored.length === 1 ? `Restored “${baseName(restored[0]!.path)}”` : `Restored ${restored.length} items`);
+        if (failed.length) toast.error(failed.length === 1 ? `Could not restore “${baseName(failed[0]!.path)}”` : `${failed.length} items could not be restored`, { description: failed[0]!.error });
+      })
+      .catch((e: Error) => toast.error("Could not restore from Trash", { description: e.message }));
+  };
+
+  /** Moves confirmed nodes to Trash: the backend checks each one and reports per item. */
+  const moveToTrash = (nodes: TreemapNodeDto[]) => {
+    if (!isTauri()) {
+      const demo = nodes.map((n) => all.find((f) => mockNodeId(f) === n.id)).filter((f): f is FsNode => !!f);
+      if (demo.length) trash(demo);
       return;
     }
-    const demo = nodes.map((n) => all.find((f) => mockNodeId(f) === n.id)).filter((f): f is FsNode => !!f);
-    if (demo.length) trash(demo);
+    if (generation === null) return;
+    const gen = generation;
+    const ids = nodes.flatMap((n) => (n.id === null ? [] : [n.id]));
+    trashNodes(gen, ids)
+      .then((report) => {
+        setSummary((s) => adjustSummary(s, report, -1));
+        setTreeVersion((v) => v + 1);
+        const moved = report.items.filter((i) => !i.error);
+        const failed = report.items.filter((i) => i.error);
+        if (moved.length) {
+          setInspected((n) => (n && moved.some((m) => m.id === n.id) ? null : n));
+          const action = report.undoAvailable ? { label: "Undo", onClick: () => undoTrash(gen, moved.map((m) => m.id)) }
+            : os === "macos" ? { label: "Open Trash", onClick: () => void openTrash().catch((e: Error) => toast.error("Could not open the Trash", { description: e.message })) }
+            : undefined;
+          toast.success(moved.length === 1 ? `Moved “${baseName(moved[0]!.path)}” to Trash` : `Moved ${moved.length} items to Trash`, {
+            description: `${formatBytes(report.allocatedBytes)} · disk space is freed when the Trash is emptied`, action, duration: 8000,
+          });
+        }
+        if (failed.length) {
+          toast.error(failed.length === 1 ? `“${baseName(failed[0]!.path)}” was not moved to Trash` : `${failed.length} items were not moved to Trash`, { description: failed[0]!.error });
+        }
+      })
+      .catch((e: Error) => toast.error("Could not move to Trash", { description: e.message }));
+  };
+
+  const reveal = (n: TreemapNodeDto) => {
+    if (n.id === null) return;
+    if (!isTauri() || generation === null) {
+      toast(`${revealLabel(os)} works in the desktop app`, { description: n.path });
+      return;
+    }
+    revealInExplorer(generation, n.id).catch((e: Error) => toast.error("Could not open the file manager", { description: e.message }));
   };
 
   const activate = (n: TreemapNodeDto) => {
@@ -200,7 +266,23 @@ export function DiskSieveApp() {
     return () => window.removeEventListener("keydown", h);
   }, []);
 
-  const copyPath = (n: TreemapNodeDto) => { navigator.clipboard?.writeText(n.path).catch(() => {}); toast("Path copied", { description: n.path }); };
+  const copyPath = (n: TreemapNodeDto) => {
+    copyText(n.path).then(() => toast.success("Path copied", { description: n.path }))
+      .catch((e: Error) => toast.error("Could not copy the path", { description: e.message }));
+  };
+
+  // Same actions for a treemap tile and a list row (`ctxNode` = item under the cursor).
+  const nodeMenu = (
+    <ContextMenuContent className="w-60">
+      <div className="truncate px-2 py-1.5 font-mono text-[11px] text-muted-foreground">{ctxNode?.name ?? "No item under cursor"}</div>
+      <ContextMenuSeparator />
+      <ContextMenuItem disabled={!ctxNode} onSelect={() => ctxNode && setInspected(ctxNode)}><Eye className="h-4 w-4" />Inspect & Safety Advisor</ContextMenuItem>
+      <ContextMenuItem disabled={!ctxNode} onSelect={() => ctxNode && reveal(ctxNode)}><ExternalLink className="h-4 w-4" />{revealLabel(os)}</ContextMenuItem>
+      <ContextMenuItem disabled={!ctxNode} onSelect={() => ctxNode && copyPath(ctxNode)}><Copy className="h-4 w-4" />Copy Full Path</ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuItem disabled={!ctxNode || trashBlocked(ctxNode)} className="text-destructive focus:text-destructive" onSelect={() => ctxNode && setConfirmTrash([ctxNode])}><Trash2 className="h-4 w-4" />Move to Trash…</ContextMenuItem>
+    </ContextMenuContent>
+  );
   const largestFiles = useMemo(() => (isTauri() ? [] : all.filter((n) => !n.isDir || n.junkTag).sort((a, b) => b.sizeBytes - a.sizeBytes).slice(0, 12)), [all]);
   const customRoot = root !== null && !drives.some((d) => d.mountPoint === root) ? root : null;
   const deltaAvailable = !isTauri();
@@ -325,15 +407,7 @@ export function DiskSieveApp() {
                         : <div className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground">{emptyMessage}</div>}
                     </div>
                   </ContextMenuTrigger>
-                  <ContextMenuContent className="w-60">
-                    <div className="truncate px-2 py-1.5 font-mono text-[11px] text-muted-foreground">{ctxNode?.name ?? "No item under cursor"}</div>
-                    <ContextMenuSeparator />
-                    <ContextMenuItem disabled={!ctxNode} onSelect={() => ctxNode && setInspected(ctxNode)}><Eye className="h-4 w-4" />Inspect & Safety Advisor</ContextMenuItem>
-                    <ContextMenuItem disabled={!ctxNode} onSelect={() => toast("Opening in File Explorer", { description: ctxNode?.path })}><ExternalLink className="h-4 w-4" />Open in File Explorer</ContextMenuItem>
-                    <ContextMenuItem disabled={!ctxNode} onSelect={() => ctxNode && copyPath(ctxNode)}><Copy className="h-4 w-4" />Copy Full Path</ContextMenuItem>
-                    <ContextMenuSeparator />
-                    <ContextMenuItem disabled={!ctxNode} className="text-destructive focus:text-destructive" onSelect={() => ctxNode && trashNodes([ctxNode])}><Trash2 className="h-4 w-4" />Move to Trash</ContextMenuItem>
-                  </ContextMenuContent>
+                  {nodeMenu}
                 </ContextMenu>
                 <div className="mt-2 flex flex-wrap items-center gap-4 text-[11px] text-muted-foreground">
                   {legendFor(mode).map((l) => (
@@ -348,13 +422,15 @@ export function DiskSieveApp() {
                   <span className="tabular-nums">{itemCount.toLocaleString()} items · sorted by {delta ? "growth" : metric === "allocated" ? "size on disk" : "logical size"}</span>
                   <span className="font-mono tabular-nums text-foreground">{formatBytes(currentTotal, delta)}</span>
                 </div>
-                <div className="scrollbar-hover min-h-0 flex-1 overflow-auto">
+                <ContextMenu>
+                <ContextMenuTrigger asChild>
+                <div className="scrollbar-hover min-h-0 flex-1 overflow-auto" onContextMenu={(e) => { if (e.target === e.currentTarget) setCtxNode(null); }}>
                   {items.map((n) => {
                     const pct = (Math.max(valueOf(n), 0) / folderTotal) * 100;
                     const isOther = n.id === null;
                     return (
                       <button key={n.id ?? "other"} onClick={() => activate(n)} disabled={isOther}
-                        onContextMenu={(e) => { e.preventDefault(); if (!isOther) setInspected(n); }}
+                        onContextMenu={() => setCtxNode(isOther ? null : n)}
                         className="group relative flex w-full items-center gap-2.5 border-b border-border/60 px-4 py-2 text-left text-sm hover:bg-accent/40 disabled:cursor-default disabled:hover:bg-transparent">
                         <span className="absolute inset-y-0 left-0 bg-primary/10" style={{ width: `${pct}%` }} />
                         {isOther ? <Layers className="relative h-4 w-4 shrink-0 text-muted-foreground" />
@@ -371,6 +447,9 @@ export function DiskSieveApp() {
                     );
                   })}
                 </div>
+                </ContextMenuTrigger>
+                {nodeMenu}
+                </ContextMenu>
               </div>
             </div>
             )}
@@ -382,11 +461,14 @@ export function DiskSieveApp() {
         {/* Inspector */}
         <Sheet open={!!inspected} onOpenChange={(o) => !o && setInspected(null)}>
           <SheetContent className="w-full overflow-y-auto sm:w-[420px] sm:max-w-[420px]">
-            {inspected && <Inspector n={inspected} onTrash={() => trashNodes([inspected])} onCopy={() => copyPath(inspected)} />}
+            {inspected && <Inspector n={inspected} os={os} onTrash={() => setConfirmTrash([inspected])} onCopy={() => copyPath(inspected)} onReveal={() => reveal(inspected)} />}
           </SheetContent>
         </Sheet>
 
-        <SpaceBalanceSheet summary={summary} open={balanceOpen} onOpenChange={setBalanceOpen} os={info?.os ?? ""} />
+        <TrashConfirmDialog nodes={confirmTrash} os={os} onCancel={() => setConfirmTrash(null)}
+          onConfirm={() => { if (confirmTrash) moveToTrash(confirmTrash); setConfirmTrash(null); }} />
+
+        <SpaceBalanceSheet summary={summary} open={balanceOpen} onOpenChange={setBalanceOpen} os={os} />
 
         {/* Command palette */}
         <CommandDialog open={cmdOpen} onOpenChange={setCmdOpen}>
@@ -427,8 +509,43 @@ export function DiskSieveApp() {
   );
 }
 
-function Inspector({ n, onTrash, onCopy }: { n: TreemapNodeDto; onTrash: () => void; onCopy: () => void }) {
+function TrashConfirmDialog({ nodes, os, onCancel, onConfirm }: { nodes: TreemapNodeDto[] | null; os: string; onCancel: () => void; onConfirm: () => void }) {
+  const list = nodes ?? [];
+  const bytes = list.reduce((a, n) => a + n.allocatedSize, 0);
+  const files = list.reduce((a, n) => a + n.fileCount, 0);
+  const title = list.length === 1 ? `Move “${list[0]!.name}” to Trash?` : `Move ${list.length} items to Trash?`;
+  const undo = os === "macos" ? "You can put it back from the Trash in Finder." : "You can undo this right after, or restore it from the Trash later.";
+  return (
+    <AlertDialog open={!!nodes} onOpenChange={(o) => !o && onCancel()}>
+      <AlertDialogContent className="grid-cols-[minmax(0,1fr)]">
+        <AlertDialogHeader>
+          <AlertDialogTitle className="break-all">{title}</AlertDialogTitle>
+          <AlertDialogDescription>
+            DiskSieve checks that nothing changed since the scan, then moves it to the system Trash. Nothing is deleted permanently. {undo}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <div className="space-y-1 rounded-md border border-border bg-background px-3 py-2">
+          {list.slice(0, 5).map((n) => (
+            <div key={n.id ?? n.path} className="truncate font-mono text-[11px] text-muted-foreground" title={n.path}>{n.path}</div>
+          ))}
+          {list.length > 5 && <div className="text-[11px] text-muted-foreground">and {list.length - 5} more</div>}
+          <div className="flex justify-between border-t border-border pt-1.5 font-mono text-xs tabular-nums">
+            <span className="text-muted-foreground">{files.toLocaleString()} {files === 1 ? "file" : "files"}</span>
+            <span>{formatBytes(bytes)}</span>
+          </div>
+        </div>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction className={buttonVariants({ variant: "destructive" })} onClick={onConfirm}><Trash2 className="h-4 w-4" />Move to Trash</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+function Inspector({ n, os, onTrash, onCopy, onReveal }: { n: TreemapNodeDto; os: string; onTrash: () => void; onCopy: () => void; onReveal: () => void }) {
   const hint = hintFor(n.name, (n.junkKind ?? null) as JunkTag);
+  const blocked = protectedReason(n);
   const system = hint.startsWith("SYSTEM");
   const safe = hint.startsWith("Safe");
   const rows: [string, string][] = [
@@ -459,9 +576,13 @@ function Inspector({ n, onTrash, onCopy }: { n: TreemapNodeDto; onTrash: () => v
         </div>
         <p className="text-sm text-muted-foreground">{hint.replace(/^SYSTEM: /, "")}</p>
       </div>
-      <div className="mt-auto flex gap-2">
-        <Button variant="outline" className="flex-1" onClick={onCopy}><Copy className="h-4 w-4" />Copy Path</Button>
-        <Button variant="destructive" className="flex-1" disabled={system} onClick={onTrash}><Trash2 className="h-4 w-4" />Move to Trash</Button>
+      <div className="mt-auto space-y-2">
+        {blocked && <p className="flex items-center gap-2 text-xs text-muted-foreground"><ShieldAlert className="h-3.5 w-3.5 shrink-0 text-warning" />{blocked}</p>}
+        <div className="flex gap-2">
+          <Button variant="outline" className="flex-1" onClick={onReveal}><ExternalLink className="h-4 w-4" />{revealLabel(os)}</Button>
+          <Button variant="outline" className="flex-1" onClick={onCopy}><Copy className="h-4 w-4" />Copy Path</Button>
+        </div>
+        <Button variant="destructive" className="w-full" disabled={system || !!blocked} onClick={onTrash}><Trash2 className="h-4 w-4" />Move to Trash…</Button>
       </div>
     </div>
   );

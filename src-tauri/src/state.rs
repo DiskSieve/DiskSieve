@@ -72,7 +72,8 @@ impl AppState {
         self.tree.read().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn tree_mut(&self) -> RwLockWriteGuard<'_, Option<ScanTree>> {
+    /// Write access to the last completed scan tree (trash / restore update it in place).
+    pub fn tree_mut(&self) -> RwLockWriteGuard<'_, Option<ScanTree>> {
         self.tree.write().unwrap_or_else(PoisonError::into_inner)
     }
 
