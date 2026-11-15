@@ -1,6 +1,9 @@
 # ── Agent AI (lokalne instrukcje i kontekst) ──────────────────────────────
 .claude/
 
+# ── Pierwotny szkielet UI z Lovable (tylko lokalny punkt odniesienia) ─────
+lovable/
+
 # ── Node / Vite / Frontend ───────────────────────────────────────────────
 node_modules/
 dist/

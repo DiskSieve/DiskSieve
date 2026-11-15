@@ -431,7 +431,7 @@ export function DiskSieveApp() {
                 </div>
                 <ContextMenu>
                 <ContextMenuTrigger asChild>
-                <div className="scrollbar-hover min-h-0 flex-1 overflow-auto" onContextMenu={(e) => { if (e.target === e.currentTarget) setCtxNode(null); }}>
+                <div className="min-h-0 flex-1 overflow-auto" onContextMenu={(e) => { if (e.target === e.currentTarget) setCtxNode(null); }}>
                   {items.map((n) => {
                     const pct = (Math.max(valueOf(n), 0) / folderTotal) * 100;
                     const isOther = n.id === null;

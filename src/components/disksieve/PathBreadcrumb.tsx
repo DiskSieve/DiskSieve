@@ -5,6 +5,8 @@ import type { BreadcrumbDto } from "@/types/ipc";
 
 /** Rough width budget per visible segment (label + separator), in px. */
 const SEGMENT_PX = 96;
+/** Names up to this many characters are always shown in full. */
+const SHORT_NAME = 5;
 
 interface Props {
   crumbs: BreadcrumbDto[];
@@ -42,8 +44,9 @@ export function PathBreadcrumb({ crumbs, onNavigate }: Props) {
   const crumb = (b: BreadcrumbDto, first: boolean) => (
     <Fragment key={b.id}>
       {!first && <BreadcrumbSeparator />}
-      {/* Parents give up width first; the current folder keeps it longest. */}
-      <BreadcrumbItem className={b === last ? "min-w-[3rem] shrink" : "min-w-[2.5rem] shrink-[8]"}>
+      {/* Parents give up width first; the current folder keeps it longest. Short names never
+          shrink (a min-width wider than the text would leave a gap after it). */}
+      <BreadcrumbItem className={b.name.length <= SHORT_NAME ? "shrink-0" : b === last ? "min-w-[3rem] shrink" : "min-w-[2.5rem] shrink-[8]"}>
         {b === last ? (
           <BreadcrumbPage className="min-w-0 truncate font-mono" title={b.name}>{b.name}</BreadcrumbPage>
         ) : (

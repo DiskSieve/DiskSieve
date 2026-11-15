@@ -61,7 +61,7 @@ export function SpaceBalanceSheet({ summary, open, onOpenChange, os }: PanelProp
   const v = summary?.volume ?? null;
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="scrollbar-hover flex w-full flex-col gap-5 overflow-y-auto sm:w-[460px] sm:max-w-[460px]">
+      <SheetContent className="flex w-full flex-col gap-5 overflow-y-auto sm:w-[460px] sm:max-w-[460px]">
         <SheetHeader>
           <SheetTitle>{v ? "Space balance" : "Skipped entries"}</SheetTitle>
           <SheetDescription className="break-all">
@@ -179,7 +179,7 @@ function Skipped({ summary }: { summary: ScanSummaryDto }) {
         <p className="text-xs text-muted-foreground">Every entry could be read.</p>
       ) : (
         <>
-          <ul className="scrollbar-hover max-h-56 overflow-y-auto rounded-md border border-border bg-background py-1">
+          <ul className="max-h-56 overflow-y-auto rounded-md border border-border bg-background py-1">
             {samples.map((p) => (
               <li key={p} className="truncate px-3 py-0.5 font-mono text-[11px] text-muted-foreground" title={p}>{p}</li>
             ))}
