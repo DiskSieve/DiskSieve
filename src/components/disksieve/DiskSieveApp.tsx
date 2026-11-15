@@ -6,6 +6,7 @@ import { formatBytes, formatMtime } from "@/lib/format";
 import { legendFor, type ColorMode } from "@/lib/treemap-palette";
 import { TitleBar } from "./TitleBar";
 import { ScanProgressDialog, ScanTargetDialog, formatDuration, usedBytes } from "./ScanDialogs";
+import { SpaceBalanceSheet, SpaceBalanceTile } from "./SpaceBalance";
 import { Treemap, otherLabel } from "./Treemap";
 import { DevJunkView, type JunkRow } from "./DevJunkView";
 import { DuplicatesView, initialDuplicates, wastedBytes } from "./DuplicatesView";
@@ -58,6 +59,7 @@ export function DiskSieveApp() {
   const [root, setRoot] = useState<string | null>(null);
   const scanSeq = useRef(0);
   const [info, setInfo] = useState<AppInfoDto | null>(null);
+  const [balanceOpen, setBalanceOpen] = useState(false);
   // Explorer: directory shown (`null` = scan root) and its projection from Rust.
   const [currentId, setCurrentId] = useState<number | null>(null);
   const [viewport, setViewport] = useState<ViewportDto | null>(null);
@@ -299,14 +301,9 @@ export function DiskSieveApp() {
                 </TooltipTrigger><TooltipContent className="max-w-[420px] break-all font-mono text-xs">
                   {scan ? scan.progress?.currentDir || "Starting…" : summary ? `${summary.rootPath} · ${summary.dirCount.toLocaleString()} folders · ${formatBytes(summary.allocatedBytes)} on disk` : "Pick a drive or folder above"}
                 </TooltipContent></Tooltip>
-                {(() => {
-                  const skipped = scan ? scan.progress?.skippedEntries ?? 0 : summary?.skippedEntries ?? 0;
-                  return skipped > 0 && (
-                    <Tooltip><TooltipTrigger asChild>
-                      <Badge variant="outline" className="border-warning/40 font-mono text-[10px] tabular-nums text-warning">{skipped.toLocaleString()} skipped (Access Denied)</Badge>
-                    </TooltipTrigger><TooltipContent className="max-w-[320px] text-xs">Entries without read permission are counted but not scanned.</TooltipContent></Tooltip>
-                  );
-                })()}
+                {scan ? (scan.progress?.skippedEntries ?? 0) > 0 && (
+                  <Badge variant="outline" className="border-warning/40 font-mono text-[10px] tabular-nums text-warning">{scan.progress!.skippedEntries.toLocaleString()} skipped (Access Denied)</Badge>
+                ) : summary && <SpaceBalanceTile summary={summary} onOpen={() => setBalanceOpen(true)} />}
               </div>
             </div>
 
@@ -388,6 +385,8 @@ export function DiskSieveApp() {
             {inspected && <Inspector n={inspected} onTrash={() => trashNodes([inspected])} onCopy={() => copyPath(inspected)} />}
           </SheetContent>
         </Sheet>
+
+        <SpaceBalanceSheet summary={summary} open={balanceOpen} onOpenChange={setBalanceOpen} os={info?.os ?? ""} />
 
         {/* Command palette */}
         <CommandDialog open={cmdOpen} onOpenChange={setCmdOpen}>

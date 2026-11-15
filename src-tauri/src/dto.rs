@@ -6,7 +6,8 @@
 //! on 64-bit integers (values stay below 2^53).
 
 use disksieve_core::{
-    Node, NodeFlags, NodeId, OtherBucket, ScanProgress, ScanTree, SizeMetric, Viewport, ROOT,
+    Node, NodeFlags, NodeId, OtherBucket, ScanProgress, ScanTree, SizeMetric, SpaceBalance,
+    Viewport, ROOT,
 };
 use std::time::Duration;
 
@@ -118,12 +119,49 @@ pub struct ScanSummaryDto {
     pub allocated_bytes: u64,
     #[ts(type = "number")]
     pub skipped_entries: u64,
+    /// Up to 50 example paths of skipped entries.
+    pub skipped_samples: Vec<String>,
     #[ts(type = "number")]
     pub duration_ms: u64,
+    /// Volume usage vs. scan result; `null` unless a whole volume was scanned.
+    pub volume: Option<SpaceBalanceDto>,
+}
+
+/// Space reconciliation of a whole-volume scan (all values in bytes).
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SpaceBalanceDto {
+    #[ts(type = "number")]
+    pub total_bytes: u64,
+    /// Used space reported by the OS.
+    #[ts(type = "number")]
+    pub used_bytes: u64,
+    #[ts(type = "number")]
+    pub free_bytes: u64,
+    /// Size on disk found by the scan.
+    #[ts(type = "number")]
+    pub scanned_bytes: u64,
+    /// Used space the scan could not see ("Unscanned / hidden").
+    #[ts(type = "number")]
+    pub unaccounted_bytes: u64,
+}
+
+impl From<SpaceBalance> for SpaceBalanceDto {
+    fn from(b: SpaceBalance) -> Self {
+        Self {
+            total_bytes: b.total,
+            used_bytes: b.used,
+            free_bytes: b.free,
+            scanned_bytes: b.scanned,
+            unaccounted_bytes: b.unaccounted,
+        }
+    }
 }
 
 impl ScanSummaryDto {
-    pub fn from_tree(tree: &ScanTree) -> Self {
+    /// `volume` is the balance of a whole-volume scan (`None` for a folder scan).
+    pub fn from_tree(tree: &ScanTree, volume: Option<SpaceBalance>) -> Self {
         let (file_count, logical_bytes, allocated_bytes) = tree.get(ROOT).map_or((0, 0, 0), |n| {
             (n.file_count, n.logical_size, n.allocated_size)
         });
@@ -139,7 +177,14 @@ impl ScanSummaryDto {
             logical_bytes,
             allocated_bytes,
             skipped_entries: tree.stats().skipped_entries,
+            skipped_samples: tree
+                .stats()
+                .skipped_samples
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect(),
             duration_ms: u64::try_from(tree.stats().duration.as_millis()).unwrap_or(u64::MAX),
+            volume: volume.map(Into::into),
         }
     }
 }
@@ -418,8 +463,10 @@ mod tests {
             |_| {},
         )
         .unwrap();
-        let summary = ScanSummaryDto::from_tree(&tree);
+        let summary = ScanSummaryDto::from_tree(&tree, None);
         assert_eq!(summary.generation, 5);
+        assert!(summary.volume.is_none());
+        assert!(summary.skipped_samples.is_empty());
         assert_eq!(summary.file_count, 2);
         assert_eq!(summary.dir_count, 2, "root + sub");
         assert_eq!(summary.logical_bytes, 1024);
@@ -428,6 +475,19 @@ mod tests {
         let json = serde_json::to_value(&summary).unwrap();
         assert!(json.get("rootPath").is_some(), "{json}");
         assert!(json.get("durationMs").is_some(), "{json}");
+        assert!(json["volume"].is_null(), "{json}");
+    }
+
+    #[test]
+    fn space_balance_maps_to_camel_case() {
+        let dto = SpaceBalanceDto::from(SpaceBalance::new(1000, 300, 650));
+        assert_eq!(
+            (dto.used_bytes, dto.free_bytes, dto.unaccounted_bytes),
+            (700, 300, 50)
+        );
+        let json = serde_json::to_value(&dto).unwrap();
+        assert_eq!(json["unaccountedBytes"], 50, "{json}");
+        assert_eq!(json["scannedBytes"], 650, "{json}");
     }
 
     #[test]

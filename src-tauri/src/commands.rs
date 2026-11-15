@@ -2,10 +2,12 @@
 //! map the result to a DTO from [`crate::dto`].
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use disksieve_core::{build_viewport, CoreError, ScanOptions, ViewportOptions, ROOT};
+use disksieve_core::{
+    build_viewport, is_volume_root, CoreError, ScanOptions, SpaceBalance, ViewportOptions, ROOT,
+};
 use sysinfo::{DiskKind, Disks};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
@@ -84,7 +86,8 @@ pub async fn start_scan(
         let state = app.state::<AppState>();
         match outcome {
             Ok(tree) => {
-                let summary = ScanSummaryDto::from_tree(&tree);
+                let scanned = tree.get(ROOT).map_or(0, |n| n.allocated_size);
+                let summary = ScanSummaryDto::from_tree(&tree, volume_balance(&root, scanned));
                 Ok(state
                     .finish_scan(handle.generation, Some(tree))
                     .then_some(summary))
@@ -135,6 +138,16 @@ pub async fn get_viewport(
     };
     let view = build_viewport(tree, node_id.unwrap_or(ROOT), &opts).map_err(|e| e.to_string())?;
     Ok(ViewportDto::from_viewport(tree, &view))
+}
+
+/// Space balance when `root` is the mount point of a volume; `None` for a folder scan.
+/// Usage is read after the scan, so it matches the moment the tree was completed.
+fn volume_balance(root: &Path, scanned: u64) -> Option<SpaceBalance> {
+    Disks::new_with_refreshed_list()
+        .list()
+        .iter()
+        .find(|d| is_volume_root(root, d.mount_point()))
+        .map(|d| SpaceBalance::new(d.total_space(), d.available_space(), scanned))
 }
 
 /// Pseudo and image file systems that are never worth scanning.
