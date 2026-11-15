@@ -8,7 +8,7 @@ use std::time::Instant;
 use disksieve_core::{
     build_viewport, detect_junk, is_volume_root, junk_projects, move_to_system_trash,
     restore_from_system_trash, CoreError, Guard, ScanOptions, ScanTree, SpaceBalance,
-    ViewportOptions, RESTORE_SUPPORTED, ROOT,
+    ViewportOptions, DEFAULT_SEARCH_LIMIT, RESTORE_SUPPORTED, ROOT,
 };
 use sysinfo::{DiskKind, Disks};
 use tauri::ipc::Channel;
@@ -17,8 +17,8 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::dto::{
-    AppInfoDto, DevJunkDto, DriveDto, ScanProgressDto, ScanSummaryDto, SizeMetricDto,
-    TrashReportDto, ViewportDto,
+    AppInfoDto, DevJunkDto, DriveDto, ScanProgressDto, ScanSummaryDto, SearchResultDto,
+    SizeMetricDto, TrashReportDto, ViewportDto,
 };
 use crate::state::AppState;
 
@@ -139,6 +139,27 @@ pub async fn get_viewport(
     let view = build_viewport(tree, node_id.unwrap_or(ROOT), &opts).map_err(|e| e.to_string())?;
     Ok(ViewportDto::from_viewport(tree, &view))
 }
+
+/// `Ctrl+K`: the largest files and folders of scan `generation` whose name contains every
+/// word of `query` (case-insensitive). Searches the in-memory tree only — no disk access.
+#[tauri::command]
+pub async fn search_nodes(
+    state: State<'_, AppState>,
+    generation: u64,
+    query: String,
+    metric: SizeMetricDto,
+    limit: Option<u32>,
+) -> Result<SearchResultDto, String> {
+    let guard = state.tree();
+    let tree = current(guard.as_ref(), generation)?;
+    let metric = metric.into();
+    let limit = limit.map_or(DEFAULT_SEARCH_LIMIT, |l| (l as usize).min(MAX_SEARCH_LIMIT));
+    let result = disksieve_core::search_nodes(tree, &query, metric, limit);
+    Ok(SearchResultDto::new(tree, &query, metric, &result))
+}
+
+/// Upper bound for `search_nodes`' `limit`, so one IPC answer stays small.
+const MAX_SEARCH_LIMIT: usize = 200;
 
 /// Dev Junk of scan `generation`: projects with rebuildable artifacts, largest first.
 /// Artifacts are detected when the scan finishes and refreshed after trash / restore.

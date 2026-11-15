@@ -12,6 +12,7 @@ pub mod dev_junk;
 pub mod error;
 pub mod safety;
 pub mod scanner;
+pub mod search;
 pub mod tree;
 
 pub use aggregator::{
@@ -26,6 +27,7 @@ pub use safety::{
     Freed, Guard, Refusal, TrashError, TrashOutcome, RESTORE_SUPPORTED,
 };
 pub use scanner::{scan, CancelToken, ScanOptions, ScanProgress};
+pub use search::{search_nodes, SearchResult, DEFAULT_SEARCH_LIMIT};
 pub use tree::{
     EntryMeta, Node, NodeFlags, NodeId, ScanStats, ScanTree, TreeBuilder, NO_NODE, ROOT,
 };

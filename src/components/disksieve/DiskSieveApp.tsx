@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ArrowUp, ChevronRight, Copy, File, Folder, FolderOpen, HardDrive, Layers, ShieldAlert, ShieldCheck, RefreshCw, Trash2, Eye, ExternalLink } from "lucide-react";
-import { findPath, flatten, hintFor, initialDrive, removeNode, type FsNode } from "@/data/mockDrive";
+import { flatten, hintFor, initialDrive, removeNode, type FsNode } from "@/data/mockDrive";
 import { copyText } from "@/lib/clipboard";
 import { junkHint } from "@/lib/junk";
 import type { TrashTarget } from "@/lib/trash";
@@ -12,6 +12,7 @@ import { ScanProgressDialog, ScanTargetDialog, formatDuration, usedBytes } from 
 import { SpaceBalanceSheet, SpaceBalanceTile } from "./SpaceBalance";
 import { Treemap, otherLabel } from "./Treemap";
 import { DevJunkView } from "./DevJunkView";
+import { SearchPalette } from "./SearchPalette";
 import { DuplicatesView, initialDuplicates, wastedBytes } from "./DuplicatesView";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -23,11 +24,10 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator,
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { buttonVariants } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandShortcut } from "@/components/ui/command";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
-import { appInfo, cancelScan, demoNodeDto, getDevJunk, getViewport, isTauri, listDrives, mockNodeId, openTrash, pickFolder, restoreNodes, revealInExplorer, setMockTree, startScan, trashNodes } from "@/lib/ipc";
+import { appInfo, cancelScan, getDevJunk, getViewport, isTauri, listDrives, mockNodeId, openTrash, pickFolder, restoreNodes, revealInExplorer, setMockTree, startScan, trashNodes } from "@/lib/ipc";
 import type { AppInfoDto, DevJunkDto, DriveDto, ScanProgressDto, ScanSummaryDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
 
 type Tab = "explorer" | "junk" | "dups";
@@ -303,7 +303,6 @@ export function DiskSieveApp() {
       <ContextMenuItem disabled={!ctxNode || trashBlocked(ctxNode)} className="text-destructive focus:text-destructive" onSelect={() => ctxNode && setConfirmTrash([ctxNode])}><Trash2 className="h-4 w-4" />Move to Trash…</ContextMenuItem>
     </ContextMenuContent>
   );
-  const largestFiles = useMemo(() => (isTauri() ? [] : all.filter((n) => !n.isDir || n.junkTag).sort((a, b) => b.sizeBytes - a.sizeBytes).slice(0, 12)), [all]);
   const customRoot = root !== null && !drives.some((d) => d.mountPoint === root) ? root : null;
   const deltaAvailable = !isTauri();
 
@@ -479,37 +478,16 @@ export function DiskSieveApp() {
 
         <SpaceBalanceSheet summary={summary} open={balanceOpen} onOpenChange={setBalanceOpen} os={os} />
 
-        {/* Command palette */}
-        <CommandDialog open={cmdOpen} onOpenChange={setCmdOpen}>
-          <CommandInput placeholder="Search files, folders, or actions…" />
-          <CommandList>
-            <CommandEmpty>No results.</CommandEmpty>
-            {largestFiles.length > 0 && (
-              <CommandGroup heading="Largest items on drive">
-                {largestFiles.map((n) => (
-                  <CommandItem key={n.id} value={`${n.name} ${n.path}`} onSelect={() => {
-                    const p = findPath(tree, n.id);
-                    if (p && p.length > 1) setCurrentId(mockNodeId(p[p.length - 2]!));
-                    setTab("explorer"); setInspected(demoNodeDto(n)); setCmdOpen(false);
-                  }}>
-                    {n.isDir ? <Folder className="text-primary" /> : <File />}
-                    <span className="truncate">{n.name}</span>
-                    <span className="ml-2 truncate font-mono text-[10px] text-muted-foreground">{n.path}</span>
-                    <CommandShortcut className="font-mono">{formatBytes(n.sizeBytes)}</CommandShortcut>
-                  </CommandItem>
-                ))}
-              </CommandGroup>
-            )}
-            <CommandGroup heading="View">
-              {MODES.map((m) => <CommandItem key={m.key} onSelect={() => { setMode(m.key); setTab("explorer"); setCmdOpen(false); }}>Color by: {m.label}</CommandItem>)}
-              {METRICS.map((m) => <CommandItem key={m.key} onSelect={() => { setMetric(m.key); setTab("explorer"); setCmdOpen(false); }}>Size: {m.label}</CommandItem>)}
-              {deltaAvailable && <CommandItem onSelect={() => { setDelta((d) => !d); setCmdOpen(false); }}>Toggle Delta Mode</CommandItem>}
-              <CommandItem onSelect={() => { setTab("junk"); setCmdOpen(false); }}>Open Dev Junk cleaner</CommandItem>
-              <CommandItem onSelect={() => { setTab("dups"); setCmdOpen(false); }}>Open Duplicates finder</CommandItem>
-              <CommandItem onSelect={() => { setCmdOpen(false); rescan(); }}>Rescan drive</CommandItem>
-            </CommandGroup>
-          </CommandList>
-        </CommandDialog>
+        <SearchPalette open={cmdOpen} onOpenChange={setCmdOpen} generation={generation} metric={metric} treeVersion={treeVersion}
+          onOpenHit={(h) => { setTab("explorer"); setCurrentId(h.parentId); setInspected(h.node); setCmdOpen(false); }}
+          actions={[
+            ...MODES.map((m) => ({ label: `Color by: ${m.label}`, run: () => { setMode(m.key); setTab("explorer"); setCmdOpen(false); } })),
+            ...METRICS.map((m) => ({ label: `Size: ${m.label}`, run: () => { setMetric(m.key); setTab("explorer"); setCmdOpen(false); } })),
+            ...(deltaAvailable ? [{ label: "Toggle Delta Mode", run: () => { setDelta((d) => !d); setCmdOpen(false); } }] : []),
+            { label: "Open Dev Junk cleaner", run: () => { setTab("junk"); setCmdOpen(false); } },
+            { label: "Open Duplicates finder", run: () => { setTab("dups"); setCmdOpen(false); } },
+            { label: "Rescan drive", run: () => { setCmdOpen(false); rescan(); } },
+          ]} />
         <ScanTargetDialog open={targetOpen && !scan} onOpenChange={setTargetOpen} drives={drives} onPickDrive={runScan} onPickFolder={() => void chooseFolder()} />
         <ScanProgressDialog path={scan?.path ?? null} progress={scan?.progress ?? null} expectedBytes={scan?.expectedBytes ?? null} onCancel={cancel} />
         <Toaster position="bottom-right" theme="dark" />
