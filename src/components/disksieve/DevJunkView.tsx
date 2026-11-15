@@ -103,7 +103,7 @@ export function DevJunkView({ data, error, scanned, revealLabel, onTrash, onReve
         </Button>
       </div>
 
-      <div className="scrollbar-hover min-h-0 flex-1 overflow-auto rounded-lg border border-border bg-card">
+      <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-border bg-card">
         <Table>
           <TableHeader className="sticky top-0 z-10 bg-card">
             <TableRow>

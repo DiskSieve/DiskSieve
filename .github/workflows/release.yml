@@ -1,0 +1,141 @@
+name: Release
+
+# Pushing a version tag (e.g. `v0.1.0`) builds installers for all three systems into a
+# *draft* GitHub release. Review the draft, then publish it by hand.
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+            args: ""
+          - name: macOS universal
+            os: macos-latest
+            args: --target universal-apple-darwin
+          - name: Linux x64
+            # Oldest supported Ubuntu: the AppImage / .deb then run on newer distros too.
+            os: ubuntu-22.04
+            args: ""
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Tag matches the app version
+        run: |
+          version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::Tag $TAG does not match tauri.conf.json version $version"
+            exit 1
+          fi
+
+      - name: Install Linux system dependencies (WebKitGTK for Tauri)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev build-essential file
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.os }}
+
+      - name: Updater signing key is configured
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::Add the TAURI_SIGNING_PRIVATE_KEY (and _PASSWORD) repository secrets: updates cannot be signed without them"
+            exit 1
+          fi
+
+      - name: npm ci
+        run: npm ci
+
+      # Builds the frontend (beforeBuildCommand), the app and the installers, and uploads
+      # them to the draft release for this tag (created by whichever job gets there first).
+      # `tauri.updater.conf.json` adds the signed update packages; tauri-action then writes
+      # `latest.json`, which installed apps read from the latest published release.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ env.TAG }}
+          releaseName: DiskSieve ${{ env.TAG }}
+          releaseDraft: true
+          prerelease: false
+          releaseBody: |
+            See the [README](https://github.com/${{ github.repository }}#installation) for installation notes.
+
+            The builds are not code-signed yet: Windows SmartScreen and macOS Gatekeeper will warn on first launch.
+            Verify downloads against `SHA256SUMS.txt`.
+          args: --config src-tauri/tauri.updater.conf.json ${{ matrix.args }}
+          # Windows updates run the NSIS installer (same as the main download), not the MSI.
+          updaterJsonPreferNsis: true
+
+      # Portable Windows build: the bare executable, no installer, nothing written to the
+      # registry. Needs the WebView2 runtime (preinstalled on Windows 10 21H2+ and 11).
+      - name: Upload portable .exe
+        if: runner.os == 'Windows'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          portable="DiskSieve_${TAG#v}_x64-portable.exe"
+          # Tauri may name the binary after `productName`; take whichever exists.
+          for exe in target/release/DiskSieve.exe target/release/disksieve-desktop.exe; do
+            [ -f "$exe" ] && cp "$exe" "$portable" && break
+          done
+          [ -f "$portable" ] || { echo "::error::release executable not found"; ls target/release; exit 1; }
+          gh release upload "$TAG" "$portable" --clobber
+
+  checksums:
+    name: SHA256SUMS.txt
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checksum every release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir assets && cd assets
+          gh release download "$TAG"
+          rm -f SHA256SUMS.txt
+          sha256sum -- * | tee SHA256SUMS.txt
+          gh release upload "$TAG" SHA256SUMS.txt --clobber

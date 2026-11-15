@@ -34,7 +34,7 @@ export function ScanTargetDialog({ open, onOpenChange, drives, onPickDrive, onPi
           <DialogTitle>What do you want to scan?</DialogTitle>
           <DialogDescription>Scan a whole drive or a single folder. DiskSieve only reads file metadata — nothing is opened or changed.</DialogDescription>
         </DialogHeader>
-        <div className="grid max-h-[50vh] gap-2 overflow-y-auto scrollbar-hover">
+        <div className="grid max-h-[50vh] gap-2 overflow-y-auto">
           {drives.length === 0 && <p className="py-6 text-center text-sm text-muted-foreground">Looking for drives…</p>}
           {drives.map((d) => {
             const pct = d.totalBytes ? (usedBytes(d) / d.totalBytes) * 100 : 0;

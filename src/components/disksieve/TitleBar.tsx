@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useState, type ButtonHTMLAttributes } from "react";
 import { Copy, Minus, Search, Settings, Square, X } from "lucide-react";
 import { Logo } from "./Logo";
+import { UpdateBanner, VersionMenu, useUpdater } from "./Updates";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -21,15 +22,14 @@ export function TitleBar({ info, onSearch }: Props) {
   const [maximized, setMaximized] = useState(false);
   useEffect(() => watchMaximized(setMaximized), []);
   const desktop = isTauri();
+  const updater = useUpdater();
 
   return (
     <header data-tauri-drag-region className="relative z-20 grid h-10 shrink-0 select-none grid-cols-[1fr_minmax(0,420px)_1fr] items-center border-b border-border bg-card">
       <div data-tauri-drag-region className="flex min-w-0 items-center gap-2 pl-3">
         <Logo className="pointer-events-none h-5 w-5" />
         <span data-tauri-drag-region className="text-[13px] font-semibold tracking-tight">DiskSieve</span>
-        <Tooltip><TooltipTrigger asChild>
-          <Badge variant="outline" className="h-5 font-mono text-[10px] text-muted-foreground">{info ? `v${info.version}` : "v…"}</Badge>
-        </TooltipTrigger><TooltipContent className="font-mono text-xs">{info ? `core ${info.coreVersion} · ${info.os}/${info.arch}` : "loading…"}</TooltipContent></Tooltip>
+        <VersionMenu info={info} updater={updater} />
         {!desktop && <Badge variant="outline" className="hidden h-5 border-warning/40 text-[10px] text-warning sm:inline-flex">demo data</Badge>}
       </div>
 
@@ -41,6 +41,7 @@ export function TitleBar({ info, onSearch }: Props) {
       </button>
 
       <div data-tauri-drag-region className="flex h-full items-center justify-end">
+        <UpdateBanner updater={updater} />
         <Tooltip><TooltipTrigger asChild>
           <WindowButton label="Settings" onClick={() => {}}><Settings className="h-4 w-4" /></WindowButton>
         </TooltipTrigger><TooltipContent className="text-xs">Settings — coming soon</TooltipContent></Tooltip>

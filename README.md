@@ -10,13 +10,18 @@ It answers not only *“what is taking up space?”*, but also *“what can I sa
 
 [![CI](https://github.com/DiskSieve/disksieve/actions/workflows/ci.yml/badge.svg)](https://github.com/DiskSieve/disksieve/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-22C55E.svg)](LICENSE)
-![Status](https://img.shields.io/badge/status-pre--alpha-F5B83D.svg)
+![Status](https://img.shields.io/badge/status-alpha-F5B83D.svg)
+[![Release](https://img.shields.io/github/v/release/DiskSieve/disksieve?color=22C55E)](https://github.com/DiskSieve/disksieve/releases/latest)
 ![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-3E5A4B.svg)
+
+<br />
+
+<img src="docs/demo.gif" alt="DiskSieve demo: scan, drill into folders, Dev Junk tab, Ctrl+K search and the Inspector" width="900" />
 
 </div>
 
 > [!WARNING]
-> DiskSieve is in early development (working towards `v0.1.0`). There are no installers yet — build it from source to try it.
+> DiskSieve is in early development: `v0.1.0` is the first public MVP. Installers are not code-signed yet, so your OS will warn on first launch (see [Installation](#installation)).
 > Scanning is read-only. The only action that changes your disk is **Move to Trash**, which always asks first, is checked by the backend and can be undone on Windows and Linux.
 
 ---
@@ -27,6 +32,8 @@ It answers not only *“what is taking up space?”*, but also *“what can I sa
 - [Features](#features)
 - [Project status](#project-status)
 - [Roadmap](#roadmap)
+- [Installation](#installation)
+- [Keyboard and mouse](#keyboard-and-mouse)
 - [Getting started](#getting-started)
 - [Architecture](#architecture)
 - [Safety and privacy](#safety-and-privacy)
@@ -80,14 +87,14 @@ Existing tools show *what* takes up space, then leave you alone with the harder 
 
 ## Project status
 
-Working towards **`v0.1.0`** — Phases 1–3 are complete, Phase 4 is in progress.
+**`v0.1.0`** — the MVP — is complete. Next up: `v0.2.0` (Safety Advisor, Sieve Basket, Delta Mode, duplicates).
 
 | Phase | Scope | Status |
 | :--- | :--- | :---: |
 | **1. Foundations** | Cargo workspace, Tauri v2 shell, IPC types generated from Rust, CI on 3 OSes | ✅ |
 | **2. Core** | Compact arena tree, multi-threaded scanner, viewport projection (Top-200 + Other) | ✅ |
 | **3. MVP integration** | Live scan, treemap on real data, app shell, space reconciliation, safe file actions | ✅ |
-| **4. Dev Junk and release** | Dev Junk engine and tab, `Ctrl+K` search, `v0.1.0` release | 🚧 |
+| **4. Dev Junk and release** | Dev Junk engine and tab, `Ctrl+K` search, signed auto-updater, `v0.1.0` release | ✅ |
 
 <details>
 <summary><b>Completed steps</b></summary>
@@ -107,6 +114,8 @@ Working towards **`v0.1.0`** — Phases 1–3 are complete, Phase 4 is in progre
 - **4.1** Dev Junk engine — build artifacts confirmed by project marker files, grouped by project, project age that ignores the artifacts, nested artifacts counted once
 - **4.2** Dev Junk tab — projects with their artifacts, filters (untouched > 90 days, by kind), bulk Move to Trash, `junk` treemap color mode
 - **4.3** `Ctrl+K` search — in-memory name search (every word, case-insensitive), 50 largest hits, jump to the result in the Explorer
+- **4.4** `v0.1.0` release — release workflow with installers for 3 OSes, portable `.exe` and `SHA256SUMS.txt`, installation guide
+- **4.5** Auto-updater — signed update packages and `latest.json` on GitHub Releases, startup check (can be turned off) and one-click update from the title bar
 
 </details>
 
@@ -122,7 +131,8 @@ Working towards **`v0.1.0`** — Phases 1–3 are complete, Phase 4 is in progre
 - [x] Safe file actions: Move to Trash with backend guard, reveal in file manager, copy path
 - [x] Dev Junk engine and cleanup tab
 - [x] `Ctrl+K` search
-- [ ] Release: icons, installers for 3 OSes, portable `.exe`, `SHA256SUMS.txt`
+- [x] Signed auto-updater with one-click update
+- [x] Release: icons, installers for 3 OSes, portable `.exe`, `SHA256SUMS.txt`
 
 ### `v0.2.0` — Decision context
 - [ ] Safety Advisor rules
@@ -145,8 +155,49 @@ Working towards **`v0.1.0`** — Phases 1–3 are complete, Phase 4 is in progre
 
 ### `v1.0.0` — Open-source readiness
 - [ ] Community docs (`CONTRIBUTING`, `CHANGELOG`, `SECURITY`)
-- [ ] Signed auto-updater
+- [ ] Update channels (beta) and in-app release notes
 - [ ] Signed installers and accessibility
+
+## Installation
+
+Download the file for your system from the [latest release](https://github.com/DiskSieve/disksieve/releases/latest) and check it against `SHA256SUMS.txt`.
+
+| System | File | Notes |
+| :--- | :--- | :--- |
+| **Windows 10/11** (x64) | `DiskSieve_<version>_x64-setup.exe` | Installer for the current user (no admin rights). An `.msi` is available too. |
+| | `DiskSieve_<version>_x64-portable.exe` | No installation — run it from anywhere. Needs the WebView2 runtime (built into Windows 10 21H2+ and 11). |
+| **macOS 11+** (Apple Silicon and Intel) | `DiskSieve_<version>_universal.dmg` | Open the image and drag DiskSieve to *Applications*. |
+| **Linux** (x64) | `.AppImage`, `.deb`, `.rpm` | AppImage: `chmod +x` and run. Debian/Ubuntu: `sudo apt install ./DiskSieve_*.deb`. Fedora: `sudo dnf install ./DiskSieve-*.rpm`. |
+
+The builds are **not code-signed yet** (planned for `v1.0.0`):
+
+- **Windows** — SmartScreen shows *“Windows protected your PC”*: click **More info → Run anyway**.
+- **macOS** — Gatekeeper refuses to open the app: right-click it in *Applications* and choose **Open**, or run `xattr -dr com.apple.quarantine /Applications/DiskSieve.app`.
+
+Verify a download (the hash must appear in `SHA256SUMS.txt`):
+
+```bash
+sha256sum DiskSieve_*                 # Linux
+shasum -a 256 DiskSieve_*             # macOS
+certutil -hashfile <file> SHA256      # Windows
+```
+
+### Updates
+
+DiskSieve checks for a new version a few seconds after it starts. When one is out, an **Update** button appears in the title bar: one click downloads it, checks its signature and restarts the app. Click the version badge next to the logo to check by hand or to turn the startup check off.
+
+The check reads `latest.json` from the latest GitHub release — it is the only network request the app makes. Update packages are signed with the project's key and rejected if the signature does not match. On Linux, updates apply to the AppImage; `.deb` / `.rpm` installs are updated through the package manager.
+
+## Keyboard and mouse
+
+| Action | How |
+| :--- | :--- |
+| Search files and folders, run actions | `Ctrl+K` (`⌘K` on macOS) |
+| Move through results / open one | `↑` `↓` / `Enter` — opens the containing folder and the Inspector |
+| Close a dialog or panel | `Esc` |
+| Open a folder | Click its tile in the treemap or its row in the list |
+| Go up one level | The `↑` button next to the breadcrumb, or click any breadcrumb segment |
+| Inspect, reveal, copy path, move to Trash | Right-click a tile or row |
 
 ## Getting started
 
@@ -175,6 +226,8 @@ To work on the UI only, run `npm run dev` and open <http://localhost:1420>. With
 ```bash
 npm run tauri build
 ```
+
+Releases are built by [`release.yml`](.github/workflows/release.yml): pushing a `v*.*.*` tag that matches the app version builds every installer into a draft GitHub release, adds the portable `.exe` and `SHA256SUMS.txt`, and waits for a manual publish. Update packages are signed with the `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` repository secrets; a local `npm run tauri build` skips them and needs no key.
 
 ### Development commands
 
@@ -224,7 +277,7 @@ Key design decisions:
 
 ## Safety and privacy
 
-- **100% offline.** No telemetry, no accounts, no network connections (an optional update check will come in `v1.0.0`).
+- **100% offline.** No telemetry, no accounts. The only network request is the update check (GitHub Releases, can be turned off); scanning and cleaning never touch the network.
 - **Read-only scanning.** The scanner reads metadata only and never opens files. Cloud-only files (OneDrive, iCloud) are detected by attributes and never downloaded.
 - **Trash only.** Nothing is ever deleted permanently — items are moved to the system Trash after a confirmation. Volume roots, the home folder and its parents, system paths and files, DiskSieve itself, links and cloud-only files are refused by the backend, whatever the UI sends.
 - **Verified before trashing.** Each item is checked against the scan first (same type, size and modification time); if it changed, it is left alone and you are asked to rescan.

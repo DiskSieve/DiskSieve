@@ -137,20 +137,21 @@
 /* Indeterminate progress bar (scan of a folder with unknown total size). */
 @keyframes scan-slide { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
 
-/* Scrollbar that matches the app and only shows while the pointer is over the scroll area. */
-.scrollbar-hover::-webkit-scrollbar { width: 10px; height: 10px; }
-.scrollbar-hover::-webkit-scrollbar-track,
-.scrollbar-hover::-webkit-scrollbar-corner { background: transparent; }
-.scrollbar-hover::-webkit-scrollbar-thumb {
+/* App-wide scrollbar: thin, matches the theme and only shows while the pointer is over the
+   scroll area (list, search results, Inspector, menus...). */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner { background: transparent; }
+*::-webkit-scrollbar-thumb {
   background-color: transparent;
   border: 3px solid transparent;
   border-radius: 9999px;
   background-clip: padding-box;
 }
-.scrollbar-hover:hover::-webkit-scrollbar-thumb { background-color: #2A312E; }
-.scrollbar-hover::-webkit-scrollbar-thumb:hover { background-color: rgb(34 197 94 / 0.6); }
-.scrollbar-hover::-webkit-scrollbar-thumb:active { background-color: #22C55E; }
+*:hover::-webkit-scrollbar-thumb { background-color: #2A312E; }
+*::-webkit-scrollbar-thumb:hover { background-color: rgb(34 197 94 / 0.6); }
+*::-webkit-scrollbar-thumb:active { background-color: #22C55E; }
 @supports not selector(::-webkit-scrollbar) {
-  .scrollbar-hover { scrollbar-width: thin; scrollbar-color: transparent transparent; }
-  .scrollbar-hover:hover { scrollbar-color: #2A312E transparent; }
+  * { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+  *:hover { scrollbar-color: #2A312E transparent; }
 }
