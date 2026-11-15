@@ -7,5 +7,6 @@ export type { DriveDto } from "./generated/DriveDto";
 export type { ScanProgressDto } from "./generated/ScanProgressDto";
 export type { ScanSummaryDto } from "./generated/ScanSummaryDto";
 export type { SizeMetricDto } from "./generated/SizeMetricDto";
+export type { SpaceBalanceDto } from "./generated/SpaceBalanceDto";
 export type { TreemapNodeDto } from "./generated/TreemapNodeDto";
 export type { ViewportDto } from "./generated/ViewportDto";

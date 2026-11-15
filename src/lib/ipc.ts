@@ -53,6 +53,9 @@ const MOCK_THREADS = typeof navigator !== "undefined" ? navigator.hardwareConcur
 let mockGeneration = 0;
 let cancelMockScan: (() => void) | null = null;
 let mockTree: FsNode = initialDrive;
+/** Demo "Unscanned / hidden" space on C: (shadow copies, protected folders, metadata). */
+const MOCK_HIDDEN_BYTES = 18.4 * 1024 ** 3;
+const MOCK_SKIPPED = ["C:\\System Volume Information", "C:\\Windows\\CSC", "C:\\Users\\Default User"];
 const MOCK_DIRS = ["Windows\\System32", "Users\\dev\\AppData\\Local", "Program Files", "Users\\dev\\Projects", "Games\\Steam\\steamapps", "Users\\dev\\Downloads"];
 
 /** Lets the demo's in-memory "trash" change the tree the mock viewport is built from. */
@@ -108,20 +111,33 @@ const mock = {
   }),
 
   drives: (): DriveDto[] => [
-    { mountPoint: "C:\\", name: "Local Disk", fileSystem: "NTFS", kind: "ssd", totalBytes: DRIVE_CAPACITY, availableBytes: DRIVE_CAPACITY - initialDrive.sizeBytes, isRemovable: false },
+    { mountPoint: "C:\\", name: "Local Disk", fileSystem: "NTFS", kind: "ssd", totalBytes: DRIVE_CAPACITY, availableBytes: DRIVE_CAPACITY - initialDrive.sizeBytes - MOCK_HIDDEN_BYTES, isRemovable: false },
     { mountPoint: "D:\\", name: "Archive", fileSystem: "NTFS", kind: "hdd", totalBytes: 2 * DRIVE_CAPACITY, availableBytes: 0.8 * DRIVE_CAPACITY, isRemovable: false },
   ],
 
-  summary: (path: string, generation: number, durationMs: number): ScanSummaryDto => ({
-    generation,
-    rootPath: path,
-    fileCount: TOTAL_FILES,
-    dirCount: Math.round(TOTAL_FILES / 9),
-    logicalBytes: Math.round(initialDrive.sizeBytes * 0.97),
-    allocatedBytes: initialDrive.sizeBytes,
-    skippedEntries: 3,
-    durationMs,
-  }),
+  summary: (path: string, generation: number, durationMs: number): ScanSummaryDto => {
+    const scannedBytes = initialDrive.sizeBytes;
+    const drive = mock.drives().find((d) => d.mountPoint === path);
+    const usedBytes = drive ? Math.max(0, drive.totalBytes - drive.availableBytes) : 0;
+    return {
+      generation,
+      rootPath: path,
+      fileCount: TOTAL_FILES,
+      dirCount: Math.round(TOTAL_FILES / 9),
+      logicalBytes: Math.round(scannedBytes * 0.97),
+      allocatedBytes: scannedBytes,
+      skippedEntries: MOCK_SKIPPED.length,
+      skippedSamples: MOCK_SKIPPED,
+      durationMs,
+      volume: drive ? {
+        totalBytes: drive.totalBytes,
+        usedBytes,
+        freeBytes: drive.availableBytes,
+        scannedBytes,
+        unaccountedBytes: Math.max(0, usedBytes - scannedBytes),
+      } : null,
+    };
+  },
 
   /** Simulated scan: progress every 100 ms for ~2.5 s, cancellable like the real one. */
   scan: (path: string, onProgress: (p: ScanProgressDto) => void): Promise<ScanSummaryDto | null> => {
@@ -142,7 +158,7 @@ const mock = {
           files: Math.round(TOTAL_FILES * f),
           dirs: Math.round((TOTAL_FILES / 9) * f),
           allocatedBytes: Math.round(initialDrive.sizeBytes * f),
-          skippedEntries: f > 0.5 ? 3 : 0,
+          skippedEntries: f > 0.5 ? MOCK_SKIPPED.length : 0,
           currentDir: f < 1 ? `${path}${MOCK_DIRS[Math.floor(f * MOCK_DIRS.length) % MOCK_DIRS.length]}` : path,
           elapsedMs: Math.round(performance.now() - t0),
           threads: MOCK_THREADS,
