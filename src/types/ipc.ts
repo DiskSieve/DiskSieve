@@ -9,6 +9,8 @@ export type { JunkProjectDto } from "./generated/JunkProjectDto";
 export type { DriveDto } from "./generated/DriveDto";
 export type { ScanProgressDto } from "./generated/ScanProgressDto";
 export type { ScanSummaryDto } from "./generated/ScanSummaryDto";
+export type { SearchHitDto } from "./generated/SearchHitDto";
+export type { SearchResultDto } from "./generated/SearchResultDto";
 export type { SizeMetricDto } from "./generated/SizeMetricDto";
 export type { SpaceBalanceDto } from "./generated/SpaceBalanceDto";
 export type { TrashErrorKindDto } from "./generated/TrashErrorKindDto";

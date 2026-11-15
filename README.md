@@ -70,7 +70,7 @@ Existing tools show *what* takes up space, then leave you alone with the harder 
 | ✅ | **Safe Move to Trash** | System Trash only, protected paths enforced in the backend, each item re-checked against the scan before it is moved, instant tree update without rescanning, Undo on Windows and Linux. |
 | ✅ | **File actions** | Right-click any tile or row: inspect, show in File Explorer / Finder, copy the full path, move to Trash. |
 | ✅ | **Dev Junk** | Build artifacts detected by project marker files (no false hits on any random `build/` folder or inside installed apps), grouped by project and its age, cleaned in bulk via the Trash. |
-| 🗓️ | **Search (`Ctrl+K`)** | Instant name search in the scanned tree — no disk access. |
+| ✅ | **Search (`Ctrl+K`)** | Instant name search in the scanned tree — no disk access. The 50 largest matches, one keystroke to jump to the folder. |
 | 🗓️ | **Safety Advisor** | A verdict for every item (*safe* / *review* / *system*) with an explanation and a safe alternative (e.g. `powercfg -h off` instead of deleting `hiberfil.sys`). |
 | 🗓️ | **Sieve Basket** | Collect items from every view, see the total space reclaimed and safety warnings, then trash them in one go. |
 | 🗓️ | **Delta Mode** | Compare with previous scans: the treemap shows only what grew. |
@@ -106,6 +106,7 @@ Working towards **`v0.1.0`** — Phases 1–3 are complete, Phase 4 is in progre
 - **3.5** Safe file actions — backend delete guard, pre-trash verification, per-item results, Undo, reveal in file manager, copy path
 - **4.1** Dev Junk engine — build artifacts confirmed by project marker files, grouped by project, project age that ignores the artifacts, nested artifacts counted once
 - **4.2** Dev Junk tab — projects with their artifacts, filters (untouched > 90 days, by kind), bulk Move to Trash, `junk` treemap color mode
+- **4.3** `Ctrl+K` search — in-memory name search (every word, case-insensitive), 50 largest hits, jump to the result in the Explorer
 
 </details>
 
@@ -120,7 +121,7 @@ Working towards **`v0.1.0`** — Phases 1–3 are complete, Phase 4 is in progre
 - [x] Space reconciliation (“unscanned / hidden” tile with an explanation)
 - [x] Safe file actions: Move to Trash with backend guard, reveal in file manager, copy path
 - [x] Dev Junk engine and cleanup tab
-- [ ] `Ctrl+K` search
+- [x] `Ctrl+K` search
 - [ ] Release: icons, installers for 3 OSes, portable `.exe`, `SHA256SUMS.txt`
 
 ### `v0.2.0` — Decision context

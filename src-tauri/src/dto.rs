@@ -7,7 +7,7 @@
 
 use disksieve_core::{
     contains_junk, JunkKind, JunkProject, Node, NodeFlags, NodeId, OtherBucket, ScanProgress,
-    ScanTree, SizeMetric, SpaceBalance, TrashError, TrashOutcome, Viewport, ROOT,
+    ScanTree, SearchResult, SizeMetric, SpaceBalance, TrashError, TrashOutcome, Viewport, ROOT,
 };
 use std::time::Duration;
 
@@ -353,6 +353,53 @@ impl ViewportDto {
             metric: view.metric.into(),
             total_value: view.total_value,
             nodes,
+        }
+    }
+}
+
+/// One `Ctrl+K` search hit: the node plus the folder it lives in (for navigation).
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SearchHitDto {
+    pub node: TreemapNodeDto,
+    /// Folder to open in the Explorer so the hit is visible.
+    pub parent_id: u32,
+}
+
+/// Largest nodes whose name matches a query (searched in memory, never on disk).
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SearchResultDto {
+    #[ts(type = "number")]
+    pub generation: u64,
+    /// The query as received, so the UI can drop answers to an older keystroke.
+    pub query: String,
+    pub metric: SizeMetricDto,
+    /// Total number of matches; `hits` holds at most the requested limit.
+    pub total_matches: u32,
+    pub hits: Vec<SearchHitDto>,
+}
+
+impl SearchResultDto {
+    pub fn new(tree: &ScanTree, query: &str, metric: SizeMetric, result: &SearchResult) -> Self {
+        Self {
+            generation: tree.generation(),
+            query: query.to_owned(),
+            metric: metric.into(),
+            total_matches: u32::try_from(result.total_matches).unwrap_or(u32::MAX),
+            hits: result
+                .hits
+                .iter()
+                .filter_map(|&id| {
+                    let node = tree.get(id)?;
+                    Some(SearchHitDto {
+                        node: TreemapNodeDto::from_node(tree, id, node, metric.value(node)),
+                        parent_id: node.parent,
+                    })
+                })
+                .collect(),
         }
     }
 }
@@ -748,6 +795,39 @@ mod tests {
         assert_eq!(json["undoAvailable"], true, "{json}");
         assert_eq!(json["items"][1]["errorKind"], "protected", "{json}");
         assert!(json["items"][0]["error"].is_null(), "{json}");
+    }
+
+    #[test]
+    fn search_result_maps_hits_with_their_parent_folder() {
+        let dir = EntryMeta {
+            flags: NodeFlags::DIR,
+            ..EntryMeta::default()
+        };
+        let file = |size: u64| EntryMeta {
+            logical_size: size,
+            allocated_size: size,
+            mtime: 1_700_000_000,
+            flags: NodeFlags::empty(),
+        };
+        let mut b = TreeBuilder::new("/scan", 4, dir);
+        let docs = b.push(ROOT, OsStr::new("docs"), dir).unwrap();
+        let report = b.push(docs, OsStr::new("Report.pdf"), file(5_000)).unwrap();
+        b.push(ROOT, OsStr::new("report-old.pdf"), file(10))
+            .unwrap();
+        let tree = b.finish(Duration::ZERO);
+
+        let result = disksieve_core::search_nodes(&tree, "REPORT", SizeMetric::Logical, 50);
+        let dto = SearchResultDto::new(&tree, "REPORT", SizeMetric::Logical, &result);
+        assert_eq!(dto.generation, 4);
+        assert_eq!(dto.total_matches, 2);
+        assert_eq!(dto.hits[0].node.id, Some(report));
+        assert_eq!(dto.hits[0].node.value, 5_000);
+        assert_eq!(dto.hits[0].parent_id, docs);
+        assert_eq!(dto.hits[1].parent_id, ROOT);
+        let json = serde_json::to_value(&dto).unwrap();
+        assert_eq!(json["totalMatches"], 2);
+        assert_eq!(json["hits"][0]["parentId"], docs);
+        assert_eq!(json["hits"][0]["node"]["name"], "Report.pdf");
     }
 
     #[test]

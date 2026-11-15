@@ -3,7 +3,7 @@
 // Inside the desktop app every call goes to Rust. In a plain browser (`npm run dev`) there is
 // no Tauri runtime, so the same functions resolve with demo data — the UI code never branches.
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { AppInfoDto, DevJunkDto, DriveDto, JunkProjectDto, ScanProgressDto, ScanSummaryDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
+import type { AppInfoDto, DevJunkDto, DriveDto, JunkProjectDto, ScanProgressDto, ScanSummaryDto, SearchResultDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
 import { DRIVE_CAPACITY, TOTAL_FILES, findPath, flatten, initialDrive, type FsNode, type JunkTag } from "@/data/mockDrive";
 import { CONTAINS_JUNK_FLAG } from "@/lib/treemap-palette";
 import { version as appVersion } from "../../package.json";
@@ -32,6 +32,7 @@ interface Commands {
   cancel_scan: { args: NoArgs; result: boolean };
   get_viewport: { args: { generation: number; nodeId: number | null; metric: SizeMetricDto }; result: ViewportDto };
   get_dev_junk: { args: { generation: number }; result: DevJunkDto };
+  search_nodes: { args: { generation: number; query: string; metric: SizeMetricDto; limit: number | null }; result: SearchResultDto };
   trash_nodes: { args: { generation: number; nodeIds: number[] }; result: TrashReportDto };
   restore_nodes: { args: { generation: number; nodeIds: number[] }; result: TrashReportDto };
   reveal_in_explorer: { args: { generation: number; nodeId: number }; result: null };
@@ -40,6 +41,8 @@ interface Commands {
 
 /** Maximum number of individual nodes in a viewport (mirrors `DEFAULT_MAX_ITEMS` in Rust). */
 export const MAX_VIEWPORT_ITEMS = 200;
+/** Hits returned by `search_nodes` (Top-50 by size). */
+export const SEARCH_LIMIT = 50;
 
 async function call<K extends keyof Commands>(
   command: K,
@@ -97,9 +100,6 @@ function mockNodeDto(n: FsNode, metric: SizeMetricDto, nowSecs: number): Treemap
     otherCount: null,
   };
 }
-
-/** Demo node as a viewport DTO (used by the demo-only "largest items" list in Ctrl+K). */
-export const demoNodeDto = (n: FsNode): TreemapNodeDto => mockNodeDto(n, "allocated", Math.floor(Date.now() / 1000));
 
 function mockOther(nodes: TreemapNodeDto[], path: string, count: number): TreemapNodeDto {
   const sum = (f: (n: TreemapNodeDto) => number) => nodes.reduce((a, n) => a + f(n), 0);
@@ -243,6 +243,23 @@ function mockDevJunk(generation: number): DevJunkDto {
   };
 }
 
+/** Demo search, same rules as `search_nodes` in Rust: every word in the name, largest first. */
+function mockSearch(generation: number, query: string, metric: SizeMetricDto, limit: number): SearchResultDto {
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const nowSecs = Math.floor(Date.now() / 1000);
+  const parents = new Map<string, FsNode>();
+  const walk = (n: FsNode) => n.children?.forEach((c) => { parents.set(c.id, n); walk(c); });
+  walk(mockTree);
+  const matches = terms.length
+    ? flatten(mockTree).filter((n) => n !== mockTree && terms.every((t) => n.name.toLowerCase().includes(t)))
+    : [];
+  const hits = matches
+    .map((n) => ({ node: mockNodeDto(n, metric, nowSecs), parentId: mockNodeId(parents.get(n.id) ?? mockTree) }))
+    .sort((a, b) => b.node.value - a.node.value || a.node.name.localeCompare(b.node.name))
+    .slice(0, limit);
+  return { generation, query, metric, totalMatches: matches.length, hits };
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────────
 /** Static information about the running application. */
 export const appInfo = (): Promise<AppInfoDto> =>
@@ -287,6 +304,13 @@ export const getViewport = (generation: number, nodeId: number | null, metric: S
 /** Dev Junk of scan `generation`: projects with rebuildable artifacts, largest first. */
 export const getDevJunk = (generation: number): Promise<DevJunkDto> =>
   isTauri() ? call("get_dev_junk", { generation }) : Promise.resolve(mockDevJunk(generation));
+
+/**
+ * `Ctrl+K`: the largest nodes of scan `generation` whose name contains every word of `query`
+ * (case-insensitive). Searched in memory — the disk is never touched.
+ */
+export const searchNodes = (generation: number, query: string, metric: SizeMetricDto, limit = SEARCH_LIMIT): Promise<SearchResultDto> =>
+  isTauri() ? call("search_nodes", { generation, query, metric, limit }) : Promise.resolve(mockSearch(generation, query, metric, limit));
 
 /** Cancels the scan in progress; `false` when nothing was running. */
 export const cancelScan = (): Promise<boolean> => {
