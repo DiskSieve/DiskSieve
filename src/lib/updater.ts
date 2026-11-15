@@ -56,7 +56,7 @@ export async function checkForUpdate(): Promise<PendingUpdate | null> {
     return {
       version: update.version,
       currentVersion: update.currentVersion,
-      notes: update.body?.trim() || null,
+      notes: releaseNotes(update.body),
       date: update.date ?? null,
       async install(onProgress) {
         let downloaded = 0;
@@ -73,6 +73,14 @@ export async function checkForUpdate(): Promise<PendingUpdate | null> {
   }
   if (demoUpdate()) return fakeUpdate();
   return null;
+}
+
+/**
+ * The release text is the CHANGELOG.md section of the version, then `---` and installation
+ * notes for the GitHub release page; the app shows only the part above the line.
+ */
+export function releaseNotes(body: string | undefined | null): string | null {
+  return body?.split(/\r?\n-{3,}[ \t]*(?:\r?\n|$)/)[0]?.trim() || null;
 }
 
 function fakeUpdate(): PendingUpdate {

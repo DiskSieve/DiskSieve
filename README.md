@@ -229,6 +229,8 @@ npm run tauri build
 
 Releases are built by [`release.yml`](.github/workflows/release.yml): pushing a `v*.*.*` tag that matches the app version builds every installer into a draft GitHub release, adds the portable `.exe` and `SHA256SUMS.txt`, and waits for a manual publish. Update packages are signed with the `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` repository secrets; a local `npm run tauri build` skips them and needs no key.
 
+Release notes live in [`CHANGELOG.md`](CHANGELOG.md): the section of the tagged version becomes the GitHub release text and the notes shown in the app's update banner, and the workflow stops if that section is missing. To release, move the **Unreleased** entries under a new `## [x.y.z] - date` heading, bump the version in `package.json`, `src-tauri/tauri.conf.json` and `Cargo.toml`, merge, then push the `vx.y.z` tag.
+
 ### Development commands
 
 | Command | Purpose |

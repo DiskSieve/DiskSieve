@@ -53,6 +53,22 @@ jobs:
             exit 1
           fi
 
+      # The CHANGELOG.md section of this version becomes the release text and the update
+      # notes the app shows (tauri-action copies `releaseBody` into latest.json).
+      - name: Release notes from CHANGELOG.md
+        id: notes
+        run: |
+          body="$(awk -v head="## [${TAG#v}]" '
+            index($0, head) == 1 { found = 1; next }
+            found && (/^## / || /^\[[^]]+\]: /) { exit }
+            found { print }
+          ' CHANGELOG.md | sed -e '/./,$!d')"
+          if [ -z "$(printf '%s' "$body" | tr -d '[:space:]')" ]; then
+            echo "::error::CHANGELOG.md has no notes under '## [${TAG#v}]'"
+            exit 1
+          fi
+          { echo "body<<__NOTES__"; printf '%s\n' "$body"; echo "__NOTES__"; } >> "$GITHUB_OUTPUT"
+
       - name: Install Linux system dependencies (WebKitGTK for Tauri)
         if: runner.os == 'Linux'
         run: |
@@ -100,7 +116,12 @@ jobs:
           releaseName: DiskSieve ${{ env.TAG }}
           releaseDraft: true
           prerelease: false
+          # The app shows only the part above `---` as update notes.
           releaseBody: |
+            ${{ steps.notes.outputs.body }}
+
+            ---
+
             See the [README](https://github.com/${{ github.repository }}#installation) for installation notes.
 
             The builds are not code-signed yet: Windows SmartScreen and macOS Gatekeeper will warn on first launch.
