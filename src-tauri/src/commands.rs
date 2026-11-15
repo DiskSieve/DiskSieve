@@ -4,13 +4,15 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use disksieve_core::{CoreError, ScanOptions};
+use disksieve_core::{build_viewport, CoreError, ScanOptions, ViewportOptions, ROOT};
 use sysinfo::{DiskKind, Disks};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
-use crate::dto::{AppInfoDto, DriveDto, ScanProgressDto, ScanSummaryDto};
+use crate::dto::{
+    AppInfoDto, DriveDto, ScanProgressDto, ScanSummaryDto, SizeMetricDto, ViewportDto,
+};
 use crate::state::AppState;
 
 /// Returns static information about the running application.
@@ -97,6 +99,34 @@ pub async fn start_scan(
 #[tauri::command]
 pub fn cancel_scan(state: State<'_, AppState>) -> bool {
     state.cancel_scan()
+}
+
+/// Projection of directory `node_id` (the scan root when `None`) from scan `generation`:
+/// up to 200 largest children plus one "Other" node. Fails for a stale generation, so node
+/// ids from an older scan can never address nodes of a newer tree.
+#[tauri::command]
+pub async fn get_viewport(
+    state: State<'_, AppState>,
+    generation: u64,
+    node_id: Option<u32>,
+    metric: SizeMetricDto,
+) -> Result<ViewportDto, String> {
+    // `async` keeps the projection (up to ~200 ms for a directory with 1M entries) off the
+    // main thread.
+    let guard = state.tree();
+    let tree = guard.as_ref().ok_or("no scan results yet")?;
+    if tree.generation() != generation {
+        return Err(format!(
+            "stale scan generation {generation} (current: {})",
+            tree.generation()
+        ));
+    }
+    let opts = ViewportOptions {
+        metric: metric.into(),
+        ..ViewportOptions::default()
+    };
+    let view = build_viewport(tree, node_id.unwrap_or(ROOT), &opts).map_err(|e| e.to_string())?;
+    Ok(ViewportDto::from_viewport(tree, &view))
 }
 
 /// Pseudo and image file systems that are never worth scanning.

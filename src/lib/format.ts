@@ -13,3 +13,10 @@ export function formatBytes(b: number, signed = false): string {
 
 /** Formats an age given in whole days, e.g. `today` or `42d ago`. */
 export const formatAge = (d: number) => (d === 0 ? "today" : `${d}d ago`);
+
+/** Whole days between a UNIX timestamp (seconds) and now; never negative. */
+export const daysSince = (unixSecs: number, nowMs = Date.now()) =>
+  Math.max(0, Math.floor((nowMs / 1000 - unixSecs) / 86_400));
+
+/** Age of a UNIX timestamp (seconds), e.g. `42d ago`; `—` when unknown (0). */
+export const formatMtime = (unixSecs: number) => (unixSecs > 0 ? formatAge(daysSince(unixSecs)) : "—");
