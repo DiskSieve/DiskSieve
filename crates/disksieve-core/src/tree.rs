@@ -556,6 +556,13 @@ impl ScanTree {
         Ok(())
     }
 
+    /// Sets the dev-junk kind of a node (`JunkKind as u8`, 0 = none). Ignores invalid ids.
+    pub fn set_junk(&mut self, id: NodeId, junk: u8) {
+        if let Some(n) = self.nodes.get_mut(id as usize) {
+            n.junk = junk;
+        }
+    }
+
     /// Whether DiskSieve itself changed the entries of directory `id` since the scan.
     pub fn is_touched(&self, id: NodeId) -> bool {
         self.touched.contains(&id)

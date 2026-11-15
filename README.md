@@ -80,14 +80,14 @@ Existing tools show *what* takes up space, then leave you alone with the harder 
 
 ## Project status
 
-Working towards **`v0.1.0`** — Phases 1–3 are complete, Phase 4 is next.
+Working towards **`v0.1.0`** — Phases 1–3 are complete, Phase 4 is in progress.
 
 | Phase | Scope | Status |
 | :--- | :--- | :---: |
 | **1. Foundations** | Cargo workspace, Tauri v2 shell, IPC types generated from Rust, CI on 3 OSes | ✅ |
 | **2. Core** | Compact arena tree, multi-threaded scanner, viewport projection (Top-200 + Other) | ✅ |
 | **3. MVP integration** | Live scan, treemap on real data, app shell, space reconciliation, safe file actions | ✅ |
-| **4. Dev Junk and release** | Dev Junk engine and tab, `Ctrl+K` search, `v0.1.0` release | 🗓️ |
+| **4. Dev Junk and release** | Dev Junk engine and tab, `Ctrl+K` search, `v0.1.0` release | 🚧 |
 
 <details>
 <summary><b>Completed steps</b></summary>
@@ -104,6 +104,7 @@ Working towards **`v0.1.0`** — Phases 1–3 are complete, Phase 4 is next.
 - **3.3** App shell — custom title bar, startup scan dialog, scan progress dialog, instant dark first paint
 - **3.4** Space reconciliation — “Unscanned / hidden” tile and an explanation panel with OS-specific causes and skipped paths
 - **3.5** Safe file actions — backend delete guard, pre-trash verification, per-item results, Undo, reveal in file manager, copy path
+- **4.1** Dev Junk engine — build artifacts confirmed by project marker files, grouped by project, project age that ignores the artifacts, nested artifacts counted once
 
 </details>
 
@@ -190,7 +191,7 @@ npm run tauri build
 disksieve/
 ├── crates/
 │   ├── disksieve-core/   # Pure Rust library: scanner, arena tree, viewport projection, space balance,
-│   │                     # delete guard (later: Dev Junk, duplicates, snapshots). No UI dependencies.
+│   │                     # delete guard, Dev Junk (later: duplicates, snapshots). No UI dependencies.
 │   └── disksieve-cli/    # Terminal mode on the same core (placeholder until v0.4.0)
 ├── src-tauri/            # Thin desktop layer: IPC commands, app state, DTOs
 └── src/                  # React 19 + TypeScript + Tailwind CSS v4 + shadcn/ui + ECharts
