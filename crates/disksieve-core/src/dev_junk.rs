@@ -6,6 +6,8 @@
 //!
 //! - [`detect_junk`] marks the top-most artifacts in the tree (`Node::junk`); nothing inside an
 //!   artifact is examined, so `node_modules/x/node_modules` or `node_modules/x/dist` count once.
+//!   Installed software is never searched ([`is_installed_software`]): a `dist/` next to
+//!   `package.json` inside a VS Code extension or a global npm package is the program itself.
 //! - [`junk_projects`] groups the marked artifacts by project, with the project's age taken
 //!   from its newest file **outside** artifacts (a fresh `npm install` does not make an old
 //!   project look active).
@@ -13,6 +15,81 @@
 use std::collections::{BTreeMap, HashSet};
 
 use crate::tree::{Node, NodeFlags, NodeId, ScanTree, NO_NODE, ROOT};
+
+/// High bit of `Node::junk`: an artifact lies somewhere below this folder.
+const CONTAINS_JUNK: u8 = 0x80;
+/// Low bits of `Node::junk`: the `JunkKind` code.
+const KIND_MASK: u8 = 0x7F;
+
+/// Folders holding installed software, app data or tool caches. Detection does not search
+/// inside them: their `package.json` + `dist/` pairs are shipped programs, not projects.
+/// Global tool caches get their own list later (spec step 7.5). Compared ignoring case.
+const INSTALLED_SOFTWARE: &[&str] = &[
+    // Installed packages and the folders that hold them.
+    "node_modules",
+    "site-packages",
+    "dist-packages",
+    "bower_components",
+    // Editors and their extensions.
+    ".vscode",
+    ".vscode-insiders",
+    ".vscode-server",
+    ".cursor",
+    ".windsurf",
+    // Per-user app data and tool homes.
+    "AppData",
+    ".cargo",
+    ".rustup",
+    ".npm",
+    ".nvm",
+    ".pnpm-store",
+    ".yarn",
+    ".bun",
+    ".deno",
+    ".m2",
+    ".ivy2",
+    ".sbt",
+    ".nuget",
+    ".gem",
+    ".pyenv",
+    ".conda",
+    "anaconda3",
+    "miniconda3",
+    ".cache",
+    ".local",
+    ".dotnet",
+    ".android",
+    ".gradle",
+    // Version control internals.
+    ".git",
+    ".hg",
+    ".svn",
+    // System and program folders.
+    "Windows",
+    "Program Files",
+    "Program Files (x86)",
+    "ProgramData",
+    "$Recycle.Bin",
+    "System Volume Information",
+    ".Trash",
+    ".Trashes",
+    "Applications",
+    "System",
+];
+
+/// Whether `dir` holds installed software rather than projects (see [`INSTALLED_SOFTWARE`]).
+/// macOS app bundles (`*.app`) count too, as do the per-user `Library` and `snap` folders.
+fn is_installed_software(name: &str) -> bool {
+    INSTALLED_SOFTWARE
+        .iter()
+        .any(|s| s.eq_ignore_ascii_case(name))
+        || name.len() > 4
+            && name
+                .get(name.len() - 4..)
+                .is_some_and(|s| s.eq_ignore_ascii_case(".app"))
+        || name == "Library"
+        || name == "snap"
+}
 
 /// Defines [`JunkKind`] with its `u8` codes (stored in `Node::junk`) and stable names.
 /// New kinds are only ever appended, so codes stay stable.
@@ -74,7 +151,7 @@ impl JunkKind {
 
     /// Kind of node `id`, if [`detect_junk`] marked it.
     pub fn of(tree: &ScanTree, id: NodeId) -> Option<Self> {
-        tree.get(id).and_then(|n| Self::from_u8(n.junk))
+        tree.get(id).and_then(|n| Self::from_u8(n.junk & KIND_MASK))
     }
 
     /// Kinds that need no marker next to them; they belong to the nearest project above.
@@ -251,6 +328,7 @@ pub fn detect_junk(tree: &mut ScanTree) -> usize {
             match classify(tree, child, dir) {
                 // Do not look inside an artifact: nested ones count once, with the top-most.
                 Some(kind) => found.push((child, kind)),
+                None if is_installed_software(tree.name(child)) => {}
                 None => stack.push(child),
             }
         }
@@ -261,7 +339,25 @@ pub fn detect_junk(tree: &mut ScanTree) -> usize {
     for &(id, kind) in &found {
         tree.set_junk(id, kind as u8);
     }
+    // Mark every folder above an artifact (the treemap's "contains artifacts" color and the
+    // shortcut for project age). Walks stop at a folder that is already marked.
+    for &(id, _) in &found {
+        let mut cur = parent_of(tree, id);
+        while let Some(n) = tree.get(cur) {
+            if n.junk & CONTAINS_JUNK != 0 {
+                break;
+            }
+            let (junk, parent) = (n.junk | CONTAINS_JUNK, n.parent);
+            tree.set_junk(cur, junk);
+            cur = parent;
+        }
+    }
     found.len()
+}
+
+/// Whether an artifact lies somewhere below folder `id` (as of the last [`detect_junk`]).
+pub fn contains_junk(tree: &ScanTree, id: NodeId) -> bool {
+    tree.get(id).is_some_and(|n| n.junk & CONTAINS_JUNK != 0)
 }
 
 /// One project with rebuildable artifacts.
@@ -284,7 +380,8 @@ pub struct JunkProject {
 pub fn junk_projects(tree: &ScanTree) -> Vec<JunkProject> {
     let artifacts: Vec<NodeId> = (0..tree.len() as NodeId)
         .filter(|&id| {
-            tree.get(id).is_some_and(|n| n.junk != 0 && !n.is_trashed())
+            tree.get(id)
+                .is_some_and(|n| n.junk & KIND_MASK != 0 && !n.is_trashed())
                 && !tree
                     .ancestors(id)
                     .any(|a| tree.get(a).is_some_and(Node::is_trashed))
@@ -336,7 +433,8 @@ pub fn junk_projects(tree: &ScanTree) -> Vec<JunkProject> {
 }
 
 /// Project folder of artifact `id`: its parent, except for kinds that need no marker next to
-/// them (Python caches and virtualenvs, Ruby bundles), which belong to the nearest ancestor that is a project root.
+/// them (Python caches and virtualenvs, Ruby bundles), which belong to the nearest ancestor
+/// that is a project root.
 fn project_of(tree: &ScanTree, id: NodeId) -> NodeId {
     let parent = tree.get(id).map_or(ROOT, |n| n.parent);
     let needs_search = JunkKind::of(tree, id).is_some_and(JunkKind::searches_project);
@@ -356,7 +454,7 @@ fn newest_outside_junk(tree: &ScanTree, dir: NodeId, above_junk: &HashSet<NodeId
     while let Some(d) = stack.pop() {
         for c in tree.children(d) {
             let Some(n) = tree.get(c) else { continue };
-            if n.is_trashed() || n.junk != 0 {
+            if n.is_trashed() || n.junk & KIND_MASK != 0 {
                 continue;
             }
             if n.is_dir() && above_junk.contains(&c) {
@@ -778,6 +876,69 @@ mod tests {
             assert_eq!(kind(&t, path), None, "{path}");
         }
         assert!(junk_projects(&t).is_empty());
+    }
+
+    #[test]
+    fn installed_software_is_never_searched() {
+        let dir = TempDir::new().unwrap();
+        layout(
+            dir.path(),
+            &[
+                // VS Code extension: `dist/` next to `package.json` is the extension itself.
+                ".vscode/extensions/acme.tool-1.0.0/package.json",
+                ".vscode/extensions/acme.tool-1.0.0/dist/extension.js",
+                // Global npm package and an Electron app under AppData.
+                "AppData/Roaming/npm/node_modules/pnpm/package.json",
+                "AppData/Roaming/npm/node_modules/pnpm/dist/pnpm.cjs",
+                "AppData/Local/Programs/Editor/resources/app/package.json",
+                "AppData/Local/Programs/Editor/resources/app/node_modules/x.js",
+                // Installed Python package and a macOS app bundle.
+                "py/lib/site-packages/pkg/setup.py",
+                "py/lib/site-packages/pkg/build/x",
+                "Tools.app/Contents/Resources/app/package.json",
+                "Tools.app/Contents/Resources/app/out/main.js",
+                // Repository internals.
+                "repo/.git/modules/sub/package.json",
+                "repo/.git/modules/sub/dist/x",
+                // A real project still works.
+                "real/package.json",
+                "real/dist/app.js",
+            ],
+        );
+        let t = scanned(&dir);
+        let projects = junk_projects(&t);
+        assert_eq!(projects.len(), 1, "{projects:?}");
+        assert_eq!(projects[0].artifacts, vec![id_of(&t, "real/dist")]);
+    }
+
+    #[test]
+    fn folders_above_artifacts_are_marked() {
+        let dir = TempDir::new().unwrap();
+        layout(
+            dir.path(),
+            &[
+                "code/app/package.json",
+                "code/app/dist/a.js",
+                "docs/readme.md",
+            ],
+        );
+        let mut t = scanned(&dir);
+        assert!(contains_junk(&t, ROOT));
+        assert!(contains_junk(&t, id_of(&t, "code")));
+        assert!(contains_junk(&t, id_of(&t, "code/app")));
+        assert!(
+            !contains_junk(&t, id_of(&t, "code/app/dist")),
+            "the artifact itself"
+        );
+        assert!(!contains_junk(&t, id_of(&t, "docs")));
+        // The mark does not leak into the kind.
+        assert_eq!(JunkKind::of(&t, id_of(&t, "code/app")), None);
+        assert_eq!(kind(&t, "code/app/dist"), Some(JunkKind::JsBuild));
+
+        t.mark_trashed(id_of(&t, "code/app/dist")).unwrap();
+        detect_junk(&mut t);
+        assert!(!contains_junk(&t, id_of(&t, "code")));
+        assert!(!contains_junk(&t, ROOT));
     }
 
     #[test]

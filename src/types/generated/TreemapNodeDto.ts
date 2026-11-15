@@ -29,11 +29,12 @@ newestMtime: number,
  */
 extension: string | null, 
 /**
- * Dev-junk kind, e.g. `node_modules` (filled in by Dev Junk detection, v0.1 step 4).
+ * Dev-junk kind of this folder, e.g. `node_modules` or `cargo_target`.
  */
 junkKind: string | null, 
 /**
- * e.g. `["hardlink", "cloudOnline", "accessDenied"]`.
+ * e.g. `["hardlink", "cloudOnline", "accessDenied"]`; `containsJunk` for a folder with
+ * dev artifacts somewhere below it.
  */
 flags: Array<string>, 
 /**

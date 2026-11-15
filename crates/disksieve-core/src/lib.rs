@@ -19,7 +19,7 @@ pub use aggregator::{
     DEFAULT_MAX_ITEMS,
 };
 pub use balance::{is_volume_root, SpaceBalance};
-pub use dev_junk::{detect_junk, junk_projects, JunkKind, JunkProject};
+pub use dev_junk::{contains_junk, detect_junk, junk_projects, JunkKind, JunkProject};
 pub use error::{CoreError, CoreResult};
 pub use safety::{
     move_to_system_trash, restore_from_system_trash, restore_nodes, trash_nodes, verify_unchanged,

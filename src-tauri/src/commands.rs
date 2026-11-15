@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use disksieve_core::{
-    build_viewport, is_volume_root, move_to_system_trash, restore_from_system_trash, CoreError,
-    Guard, ScanOptions, ScanTree, SpaceBalance, ViewportOptions, RESTORE_SUPPORTED, ROOT,
+    build_viewport, detect_junk, is_volume_root, junk_projects, move_to_system_trash,
+    restore_from_system_trash, CoreError, Guard, ScanOptions, ScanTree, SpaceBalance,
+    ViewportOptions, RESTORE_SUPPORTED, ROOT,
 };
 use sysinfo::{DiskKind, Disks};
 use tauri::ipc::Channel;
@@ -16,8 +17,8 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::dto::{
-    AppInfoDto, DriveDto, ScanProgressDto, ScanSummaryDto, SizeMetricDto, TrashReportDto,
-    ViewportDto,
+    AppInfoDto, DevJunkDto, DriveDto, ScanProgressDto, ScanSummaryDto, SizeMetricDto,
+    TrashReportDto, ViewportDto,
 };
 use crate::state::AppState;
 
@@ -88,7 +89,9 @@ pub async fn start_scan(
 
         let state = app.state::<AppState>();
         match outcome {
-            Ok(tree) => {
+            Ok(mut tree) => {
+                // Dev Junk works on the tree alone (no disk access), so it is part of the scan.
+                detect_junk(&mut tree);
                 let scanned = tree.get(ROOT).map_or(0, |n| n.allocated_size);
                 let summary = ScanSummaryDto::from_tree(&tree, volume_balance(&root, scanned));
                 Ok(state
@@ -137,6 +140,18 @@ pub async fn get_viewport(
     Ok(ViewportDto::from_viewport(tree, &view))
 }
 
+/// Dev Junk of scan `generation`: projects with rebuildable artifacts, largest first.
+/// Artifacts are detected when the scan finishes and refreshed after trash / restore.
+#[tauri::command]
+pub async fn get_dev_junk(
+    state: State<'_, AppState>,
+    generation: u64,
+) -> Result<DevJunkDto, String> {
+    let guard = state.tree();
+    let tree = current(guard.as_ref(), generation)?;
+    Ok(DevJunkDto::new(tree, &junk_projects(tree)))
+}
+
 /// Moves nodes of scan `generation` to the system Trash. Every node passes the backend guard
 /// and an on-disk check (unchanged since the scan) first; the tree is updated after each
 /// success, without a rescan. Returns one result per node — a failure never stops the rest.
@@ -152,6 +167,8 @@ pub async fn trash_nodes(
         let mut slot = state.tree_mut();
         let tree = current_mut(slot.as_mut(), generation)?;
         let outcomes = disksieve_core::trash_nodes(tree, &node_ids, &guard, move_to_system_trash);
+        // Folders above a removed artifact may no longer contain any.
+        detect_junk(tree);
         Ok(TrashReportDto::new(
             generation,
             &outcomes,
@@ -174,6 +191,7 @@ pub async fn restore_nodes(
         let mut slot = state.tree_mut();
         let tree = current_mut(slot.as_mut(), generation)?;
         let outcomes = disksieve_core::restore_nodes(tree, &node_ids, restore_from_system_trash);
+        detect_junk(tree);
         Ok(TrashReportDto::new(
             generation,
             &outcomes,

@@ -3,6 +3,9 @@
 // Regenerate after changing `src-tauri/src/dto.rs`: `npm run gen:types`.
 export type { AppInfoDto } from "./generated/AppInfoDto";
 export type { BreadcrumbDto } from "./generated/BreadcrumbDto";
+export type { DevJunkDto } from "./generated/DevJunkDto";
+export type { JunkArtifactDto } from "./generated/JunkArtifactDto";
+export type { JunkProjectDto } from "./generated/JunkProjectDto";
 export type { DriveDto } from "./generated/DriveDto";
 export type { ScanProgressDto } from "./generated/ScanProgressDto";
 export type { ScanSummaryDto } from "./generated/ScanSummaryDto";

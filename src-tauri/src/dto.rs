@@ -6,8 +6,8 @@
 //! on 64-bit integers (values stay below 2^53).
 
 use disksieve_core::{
-    Node, NodeFlags, NodeId, OtherBucket, ScanProgress, ScanTree, SizeMetric, SpaceBalance,
-    TrashError, TrashOutcome, Viewport, ROOT,
+    contains_junk, JunkKind, JunkProject, Node, NodeFlags, NodeId, OtherBucket, ScanProgress,
+    ScanTree, SizeMetric, SpaceBalance, TrashError, TrashOutcome, Viewport, ROOT,
 };
 use std::time::Duration;
 
@@ -251,9 +251,10 @@ pub struct TreemapNodeDto {
     pub newest_mtime: u32,
     /// Lower-case extension without the dot; `null` for folders and files without one.
     pub extension: Option<String>,
-    /// Dev-junk kind, e.g. `node_modules` (filled in by Dev Junk detection, v0.1 step 4).
+    /// Dev-junk kind of this folder, e.g. `node_modules` or `cargo_target`.
     pub junk_kind: Option<String>,
-    /// e.g. `["hardlink", "cloudOnline", "accessDenied"]`.
+    /// e.g. `["hardlink", "cloudOnline", "accessDenied"]`; `containsJunk` for a folder with
+    /// dev artifacts somewhere below it.
     pub flags: Vec<String>,
     /// Number of merged children (only for "Other").
     pub other_count: Option<u32>,
@@ -262,6 +263,11 @@ pub struct TreemapNodeDto {
 impl TreemapNodeDto {
     fn from_node(tree: &ScanTree, id: NodeId, node: &Node, value: u64) -> Self {
         let ext = tree.extension(id);
+        let junk_kind = JunkKind::of(tree, id).map(|k| k.as_str().to_owned());
+        let mut flags = flag_names(node.flags);
+        if junk_kind.is_none() && contains_junk(tree, id) {
+            flags.push(CONTAINS_JUNK_FLAG.into());
+        }
         Self {
             id: Some(id),
             name: tree.name(id).to_owned(),
@@ -274,8 +280,8 @@ impl TreemapNodeDto {
             file_count: node.file_count,
             newest_mtime: node.newest_mtime,
             extension: (!ext.is_empty()).then(|| ext.to_owned()),
-            junk_kind: None,
-            flags: flag_names(node.flags),
+            junk_kind,
+            flags,
             other_count: None,
         }
     }
@@ -443,6 +449,118 @@ impl TrashReportDto {
             undo_available,
         }
     }
+}
+
+/// Flag of a folder with dev artifacts somewhere below it (treemap "junk" color mode).
+const CONTAINS_JUNK_FLAG: &str = "containsJunk";
+
+/// One rebuildable artifact of a project.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct JunkArtifactDto {
+    pub id: u32,
+    /// Folder name, e.g. `node_modules`.
+    pub name: String,
+    /// Path relative to the project folder, e.g. `src/__pycache__`.
+    pub rel_path: String,
+    /// Full display path.
+    pub path: String,
+    /// Stable kind identifier, e.g. `node_modules`, `cargo_target`.
+    pub kind: String,
+    #[ts(type = "number")]
+    pub allocated_bytes: u64,
+    #[ts(type = "number")]
+    pub logical_bytes: u64,
+    pub file_count: u32,
+}
+
+/// A project with rebuildable artifacts.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct JunkProjectDto {
+    /// Node id of the project folder.
+    pub id: u32,
+    pub name: String,
+    pub path: String,
+    /// Newest file outside artifacts (seconds since the UNIX epoch, 0 if none) — when the
+    /// project was last worked on.
+    pub newest_mtime: u32,
+    #[ts(type = "number")]
+    pub allocated_bytes: u64,
+    #[ts(type = "number")]
+    pub logical_bytes: u64,
+    pub file_count: u32,
+    /// Largest first.
+    pub artifacts: Vec<JunkArtifactDto>,
+}
+
+/// Result of `get_dev_junk`: projects with artifacts, largest first, plus totals.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DevJunkDto {
+    #[ts(type = "number")]
+    pub generation: u64,
+    pub projects: Vec<JunkProjectDto>,
+    #[ts(type = "number")]
+    pub allocated_bytes: u64,
+    #[ts(type = "number")]
+    pub logical_bytes: u64,
+    pub artifact_count: u32,
+}
+
+impl DevJunkDto {
+    pub fn new(tree: &ScanTree, projects: &[JunkProject]) -> Self {
+        let projects: Vec<JunkProjectDto> = projects
+            .iter()
+            .map(|p| JunkProjectDto {
+                id: p.dir,
+                name: tree.name(p.dir).to_owned(),
+                path: tree.display_path(p.dir),
+                newest_mtime: p.newest_mtime,
+                allocated_bytes: p.allocated_size,
+                logical_bytes: p.logical_size,
+                file_count: p.file_count,
+                artifacts: p
+                    .artifacts
+                    .iter()
+                    .filter_map(|&id| artifact(tree, p.dir, id))
+                    .collect(),
+            })
+            .collect();
+        Self {
+            generation: tree.generation(),
+            allocated_bytes: projects.iter().map(|p| p.allocated_bytes).sum(),
+            logical_bytes: projects.iter().map(|p| p.logical_bytes).sum(),
+            artifact_count: projects.iter().map(|p| p.artifacts.len() as u32).sum(),
+            projects,
+        }
+    }
+}
+
+fn artifact(tree: &ScanTree, project: NodeId, id: NodeId) -> Option<JunkArtifactDto> {
+    let node = tree.get(id)?;
+    let (logical, allocated, files) = node.contribution();
+    // Names from the artifact up to (not including) the project folder.
+    let mut parts = vec![tree.name(id)];
+    parts.extend(
+        tree.ancestors(id)
+            .take_while(|&a| a != project)
+            .map(|a| tree.name(a)),
+    );
+    parts.reverse();
+    Some(JunkArtifactDto {
+        id,
+        name: tree.name(id).to_owned(),
+        rel_path: parts.join("/"),
+        path: tree.display_path(id),
+        kind: JunkKind::of(tree, id)?.as_str().to_owned(),
+        allocated_bytes: allocated,
+        logical_bytes: logical,
+        file_count: files,
+    })
 }
 
 fn flag_names(flags: NodeFlags) -> Vec<String> {
@@ -630,6 +748,63 @@ mod tests {
         assert_eq!(json["undoAvailable"], true, "{json}");
         assert_eq!(json["items"][1]["errorKind"], "protected", "{json}");
         assert!(json["items"][0]["error"].is_null(), "{json}");
+    }
+
+    #[test]
+    fn dev_junk_maps_projects_artifacts_and_viewport_marks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for (path, bytes) in [
+            ("code/web/package.json", 10),
+            ("code/web/node_modules/x.js", 30_000),
+            ("code/py/pyproject.toml", 10),
+            ("code/py/pkg/__pycache__/m.pyc", 500),
+        ] {
+            let p = root.join(path);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, vec![0u8; bytes]).unwrap();
+        }
+        let opts = disksieve_core::ScanOptions {
+            generation: 3,
+            ..Default::default()
+        };
+        let mut tree =
+            disksieve_core::scan(root, &opts, &disksieve_core::CancelToken::new(), |_| {}).unwrap();
+        disksieve_core::detect_junk(&mut tree);
+
+        let dto = DevJunkDto::new(&tree, &disksieve_core::junk_projects(&tree));
+        assert_eq!(dto.generation, 3);
+        assert_eq!(dto.artifact_count, 2);
+        assert_eq!(dto.projects[0].name, "web", "largest first");
+        let py = &dto.projects[1];
+        assert_eq!(py.name, "py");
+        assert_eq!(py.artifacts[0].rel_path, "pkg/__pycache__");
+        assert_eq!(py.artifacts[0].kind, "python_cache");
+        assert_eq!(
+            dto.logical_bytes,
+            dto.projects.iter().map(|p| p.logical_bytes).sum::<u64>()
+        );
+        let json = serde_json::to_value(&dto).unwrap();
+        assert_eq!(
+            json["projects"][1]["artifacts"][0]["relPath"],
+            "pkg/__pycache__"
+        );
+
+        let code = tree.child_by_name(ROOT, "code").unwrap();
+        let view = build_viewport(&tree, code, &ViewportOptions::default()).unwrap();
+        let tiles = ViewportDto::from_viewport(&tree, &view).nodes;
+        assert!(tiles
+            .iter()
+            .all(|t| t.flags.contains(&"containsJunk".to_owned())));
+        let web = tree.child_by_name(code, "web").unwrap();
+        let view = build_viewport(&tree, web, &ViewportOptions::default()).unwrap();
+        let nm = ViewportDto::from_viewport(&tree, &view)
+            .nodes
+            .into_iter()
+            .find(|t| t.name == "node_modules")
+            .unwrap();
+        assert_eq!(nm.junk_kind.as_deref(), Some("node_modules"));
+        assert!(nm.flags.is_empty());
     }
 
     #[test]
