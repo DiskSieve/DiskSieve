@@ -16,6 +16,7 @@ pub fn run() {
             commands::pick_folder,
             commands::start_scan,
             commands::cancel_scan,
+            commands::get_viewport,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

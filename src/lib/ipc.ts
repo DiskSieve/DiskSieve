@@ -3,8 +3,9 @@
 // Inside the desktop app every call goes to Rust. In a plain browser (`npm run dev`) there is
 // no Tauri runtime, so the same functions resolve with demo data — the UI code never branches.
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { AppInfoDto, DriveDto, ScanProgressDto, ScanSummaryDto } from "@/types/ipc";
-import { DRIVE_CAPACITY, TOTAL_FILES, initialDrive } from "@/data/mockDrive";
+import type { AppInfoDto, DriveDto, ScanProgressDto, ScanSummaryDto, SizeMetricDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
+import { DRIVE_CAPACITY, TOTAL_FILES, findPath, flatten, initialDrive, type FsNode } from "@/data/mockDrive";
+import { CONTAINS_JUNK_FLAG } from "@/lib/treemap-palette";
 import { version as appVersion } from "../../package.json";
 
 /** True when running inside the Tauri desktop shell (not a plain browser tab). */
@@ -29,7 +30,11 @@ interface Commands {
   pick_folder: { args: NoArgs; result: string | null };
   start_scan: { args: { path: string; onProgress: Channel<ScanProgressDto> }; result: ScanSummaryDto | null };
   cancel_scan: { args: NoArgs; result: boolean };
+  get_viewport: { args: { generation: number; nodeId: number | null; metric: SizeMetricDto }; result: ViewportDto };
 }
+
+/** Maximum number of individual nodes in a viewport (mirrors `DEFAULT_MAX_ITEMS` in Rust). */
+export const MAX_VIEWPORT_ITEMS = 200;
 
 async function call<K extends keyof Commands>(
   command: K,
@@ -46,6 +51,50 @@ async function call<K extends keyof Commands>(
 const MOCK_SCAN_MS = 800;
 let mockGeneration = 0;
 let cancelMockScan: (() => void) | null = null;
+let mockTree: FsNode = initialDrive;
+
+/** Lets the demo's in-memory "trash" change the tree the mock viewport is built from. */
+export const setMockTree = (tree: FsNode) => {
+  mockTree = tree;
+};
+
+/** Numeric id of a demo node (`"n42"` → 42). */
+export const mockNodeId = (n: FsNode) => Number(n.id.slice(1));
+const containsJunk = (n: FsNode): boolean => !!n.junkTag || !!n.children?.some(containsJunk);
+
+function mockNodeDto(n: FsNode, metric: SizeMetricDto, nowSecs: number): TreemapNodeDto {
+  const allocatedSize = n.sizeBytes;
+  const logicalSize = Math.round(n.sizeBytes * 0.985);
+  return {
+    id: mockNodeId(n),
+    name: n.name,
+    path: n.path,
+    value: metric === "allocated" ? allocatedSize : logicalSize,
+    logicalSize,
+    allocatedSize,
+    deltaBytes: n.deltaBytes,
+    isDir: n.isDir,
+    fileCount: n.fileCount,
+    newestMtime: nowSecs - n.lastModifiedDaysAgo * 86_400,
+    extension: n.isDir || !n.extension ? null : n.extension,
+    junkKind: n.junkTag,
+    flags: !n.junkTag && containsJunk(n) ? [CONTAINS_JUNK_FLAG] : [],
+    otherCount: null,
+  };
+}
+
+/** Demo node as a viewport DTO (used by the demo-only "largest items" list in Ctrl+K). */
+export const demoNodeDto = (n: FsNode): TreemapNodeDto => mockNodeDto(n, "allocated", Math.floor(Date.now() / 1000));
+
+function mockOther(nodes: TreemapNodeDto[], path: string, count: number): TreemapNodeDto {
+  const sum = (f: (n: TreemapNodeDto) => number) => nodes.reduce((a, n) => a + f(n), 0);
+  return {
+    id: null, name: "Other", path,
+    value: sum((n) => n.value), logicalSize: sum((n) => n.logicalSize), allocatedSize: sum((n) => n.allocatedSize),
+    deltaBytes: sum((n) => n.deltaBytes ?? 0), isDir: false, fileCount: sum((n) => n.fileCount),
+    newestMtime: Math.max(0, ...nodes.map((n) => n.newestMtime)), extension: null, junkKind: null, flags: [], otherCount: count,
+  };
+}
 
 const mock = {
   appInfo: (): AppInfoDto => ({
@@ -106,6 +155,32 @@ const mock = {
   },
 };
 
+/** Demo projection, same shape and rules as `build_viewport` in Rust. */
+function mockViewport(generation: number, nodeId: number | null, metric: SizeMetricDto): ViewportDto {
+  const target = nodeId === null ? mockTree : flatten(mockTree).find((n) => mockNodeId(n) === nodeId);
+  if (!target) throw new IpcError("get_viewport", `node ${nodeId} does not exist in the scan tree`);
+  if (!target.isDir) throw new IpcError("get_viewport", `operation not allowed on node ${nodeId}: not a directory`);
+  const nowSecs = Math.floor(Date.now() / 1000);
+  const trail = findPath(mockTree, target.id) ?? [target];
+  const children = (target.children ?? []).map((c) => mockNodeDto(c, metric, nowSecs)).sort((a, b) => b.value - a.value);
+  const nodes = children.slice(0, MAX_VIEWPORT_ITEMS);
+  const rest = children.slice(MAX_VIEWPORT_ITEMS);
+  if (rest.length) nodes.push(mockOther(rest, target.path, rest.length));
+  // Demo folders without listed contents ("blobs") are shown as one aggregated node.
+  if (!children.length && target.sizeBytes > 0) {
+    nodes.push(mockOther([mockNodeDto(target, metric, nowSecs)], target.path, target.fileCount));
+  }
+  return {
+    generation,
+    currentId: mockNodeId(target),
+    currentPath: target.path,
+    breadcrumbs: trail.map((n) => ({ id: mockNodeId(n), name: n.name })),
+    metric,
+    totalValue: nodes.reduce((a, n) => a + n.value, 0),
+    nodes,
+  };
+}
+
 /** Summary shown in the browser demo before any scan is started. */
 export const demoSummary = (): ScanSummaryDto => mock.summary("C:\\", 0, 1420);
 
@@ -134,6 +209,20 @@ export const startScan = (
   const channel = new Channel<ScanProgressDto>();
   channel.onmessage = onProgress;
   return call("start_scan", { path, onProgress: channel });
+};
+
+/**
+ * Projection of directory `nodeId` (`null` = scan root) from scan `generation`: up to 200
+ * largest children plus one "Other" node (`id: null`). Rejects with an `IpcError` for a stale
+ * generation or an unknown node.
+ */
+export const getViewport = (generation: number, nodeId: number | null, metric: SizeMetricDto): Promise<ViewportDto> => {
+  if (isTauri()) return call("get_viewport", { generation, nodeId, metric });
+  try {
+    return Promise.resolve(mockViewport(generation, nodeId, metric));
+  } catch (e) {
+    return Promise.reject(e);
+  }
 };
 
 /** Cancels the scan in progress; `false` when nothing was running. */

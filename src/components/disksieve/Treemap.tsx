@@ -1,20 +1,33 @@
 import { useEffect, useRef } from "react";
-import type { FsNode } from "@/data/mockDrive";
-import { formatAge, formatBytes } from "@/lib/format";
+import type { TreemapNodeDto } from "@/types/ipc";
+import { formatBytes, formatMtime } from "@/lib/format";
 import { colorFor, type ColorMode } from "@/lib/treemap-palette";
 
 type ECharts = import("@/lib/echarts").ECharts;
 
 interface Props {
-  parent: FsNode;
-  items: FsNode[];
+  /** Name of the directory being shown (for "x% of …" in the tooltip). */
+  parentName: string;
+  items: TreemapNodeDto[];
+  /** Area of each tile. */
+  valueOf: (n: TreemapNodeDto) => number;
   mode: ColorMode;
-  delta: boolean;
-  onActivate: (n: FsNode) => void;
-  onContextTarget: (n: FsNode | null) => void;
+  /** Values are signed growth (Delta Mode). */
+  signed: boolean;
+  onActivate: (n: TreemapNodeDto) => void;
+  onContextTarget: (n: TreemapNodeDto | null) => void;
 }
 
-export function Treemap({ parent, items, mode, delta, onActivate, onContextTarget }: Props) {
+const OTHER_KEY = "__other__";
+const keyOf = (n: TreemapNodeDto) => (n.id === null ? OTHER_KEY : String(n.id));
+
+const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+
+export function otherLabel(n: TreemapNodeDto) {
+  return `Other (${(n.otherCount ?? 0).toLocaleString()} ${n.otherCount === 1 ? "item" : "items"})`;
+}
+
+export function Treemap({ parentName, items, valueOf, mode, signed, onActivate, onContextTarget }: Props) {
   const el = useRef<HTMLDivElement>(null);
   const chart = useRef<ECharts | null>(null);
   const handlers = useRef({ onActivate, onContextTarget, items });
@@ -27,9 +40,15 @@ export function Treemap({ parent, items, mode, delta, onActivate, onContextTarge
       if (disposed || !el.current) return;
       const c = ec.init(el.current, undefined, { renderer: "canvas" });
       chart.current = c;
-      const byId = (id: string) => handlers.current.items.find((n) => n.id === id);
-      c.on("click", (p) => { const n = byId((p.data as { id: string })?.id); if (n) handlers.current.onActivate(n); });
-      c.on("contextmenu", (p) => { handlers.current.onContextTarget(byId((p.data as { id: string })?.id) ?? null); });
+      const byKey = (key: string | undefined) => handlers.current.items.find((n) => keyOf(n) === key);
+      c.on("click", (p) => {
+        const n = byKey((p.data as { id?: string })?.id);
+        if (n && n.id !== null) handlers.current.onActivate(n);
+      });
+      c.on("contextmenu", (p) => {
+        const n = byKey((p.data as { id?: string })?.id);
+        handlers.current.onContextTarget(n && n.id !== null ? n : null);
+      });
       ro = new ResizeObserver(() => c.resize());
       ro.observe(el.current);
       render();
@@ -41,28 +60,29 @@ export function Treemap({ parent, items, mode, delta, onActivate, onContextTarge
   const render = () => {
     const c = chart.current;
     if (!c) return;
-    const val = (n: FsNode) => (delta ? Math.max(n.deltaBytes, 0) : n.sizeBytes);
-    const total = items.reduce((a, n) => a + val(n), 0) || 1;
-    const data = items.filter((n) => val(n) > 0).map((n) => ({
-      id: n.id, name: n.name, value: val(n), node: n,
-      itemStyle: { color: colorFor(n, mode), borderColor: "#0B0D0C" },
+    const now = Date.now();
+    const total = items.reduce((a, n) => a + Math.max(valueOf(n), 0), 0) || 1;
+    const data = items.filter((n) => valueOf(n) > 0).map((n) => ({
+      id: keyOf(n),
+      name: n.id === null ? otherLabel(n) : n.name,
+      value: valueOf(n),
+      node: n,
+      itemStyle: { color: colorFor(n, mode, now), borderColor: "#0B0D0C" },
     }));
-    if (!delta && items.length > 2) {
-      data.push({ id: "__other", name: "Other (1,420 small files)", value: total * 0.012, node: undefined as unknown as FsNode, itemStyle: { color: "#1A1F1D", borderColor: "#0B0D0C" } });
-    }
     c.setOption({
       animationDurationUpdate: 450,
       tooltip: {
         backgroundColor: "#121514", borderColor: "#1F2422", padding: [8, 10],
         textStyle: { color: "#E8EDEA", fontFamily: "Geist Variable, Geist, sans-serif", fontSize: 12 },
-        formatter: (p: { data: { node?: FsNode; name: string; value: number } }) => {
+        formatter: (p: { data: { node: TreemapNodeDto; name: string; value: number } }) => {
           const n = p.data.node;
           const pct = ((p.data.value / total) * 100).toFixed(1);
           const mono = "font-family:JetBrains Mono Variable,JetBrains Mono,monospace";
-          if (!n) return `<b>${p.data.name}</b><br/><span style="${mono};color:#8A968F">${formatBytes(p.data.value)} · aggregated</span>`;
-          return `<div style="min-width:180px"><b>${n.name}</b>${n.junkTag ? ` <span style="color:#1ED760">· ${n.junkTag}</span>` : ""}<br/>
-            <span style="${mono}">${formatBytes(p.data.value, delta)}</span> <span style="color:#8A968F">· ${pct}% of ${parent.name}</span><br/>
-            <span style="color:#8A968F;${mono};font-size:11px">${n.fileCount.toLocaleString()} files · ${formatAge(n.lastModifiedDaysAgo)}</span></div>`;
+          const name = escapeHtml(p.data.name);
+          const tag = n.junkKind ? ` <span style="color:#1ED760">· ${escapeHtml(n.junkKind)}</span>` : "";
+          return `<div style="min-width:180px"><b>${name}</b>${tag}<br/>
+            <span style="${mono}">${formatBytes(p.data.value, signed)}</span> <span style="color:#8A968F">· ${pct}% of ${escapeHtml(parentName)}</span><br/>
+            <span style="color:#8A968F;${mono};font-size:11px">${n.fileCount.toLocaleString()} files · ${formatMtime(n.newestMtime)}</span></div>`;
         },
       },
       series: [{
@@ -70,7 +90,8 @@ export function Treemap({ parent, items, mode, delta, onActivate, onContextTarge
         breadcrumb: { show: false }, squareRatio: 0.9,
         label: {
           show: true, position: "insideTopLeft", padding: 8, overflow: "truncate",
-          formatter: (p: { name: string; value: number }) => `{n|${p.name}}\n{s|${formatBytes(p.value, delta)}}`,
+          // `{` / `}` would break ECharts rich-text markup; the tooltip shows the full name.
+          formatter: (p: { name: string; value: number }) => `{n|${p.name.replace(/[{}]/g, "")}}\n{s|${formatBytes(p.value, signed)}}`,
           rich: {
             n: { color: "#F2F5F3", fontSize: 12, fontWeight: 600, fontFamily: "Geist Variable, Geist, sans-serif", lineHeight: 16 },
             s: { color: "rgba(242,245,243,0.7)", fontSize: 11, fontFamily: "JetBrains Mono Variable, JetBrains Mono, monospace" },
