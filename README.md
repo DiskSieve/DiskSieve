@@ -172,6 +172,7 @@ Download the file for your system from the [latest release](https://github.com/D
 The builds are **not code-signed yet** (planned for `v1.0.0`):
 
 - **Windows** — SmartScreen shows *“Windows protected your PC”*: click **More info → Run anyway**.
+- **Windows 11 with Smart App Control on** — the app is blocked (*“Smart App Control blocked an app that may be unsafe”*) and there is no option to run it anyway. Smart App Control allows only signed or widely known apps, so DiskSieve cannot run there until the builds are signed. We do not recommend turning Smart App Control off for it: on many Windows builds it cannot be turned back on without reinstalling Windows.
 - **macOS** — Gatekeeper refuses to open the app: right-click it in *Applications* and choose **Open**, or run `xattr -dr com.apple.quarantine /Applications/DiskSieve.app`.
 
 Verify a download (the hash must appear in `SHA256SUMS.txt`):
