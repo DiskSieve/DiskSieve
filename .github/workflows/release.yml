@@ -124,7 +124,8 @@ jobs:
 
             See the [README](https://github.com/${{ github.repository }}#installation) for installation notes.
 
-            The builds are not code-signed yet: Windows SmartScreen and macOS Gatekeeper will warn on first launch.
+            The builds are not code-signed yet: Windows SmartScreen and macOS Gatekeeper will warn on first launch,
+            and Windows 11 with Smart App Control turned on blocks the app.
             Verify downloads against `SHA256SUMS.txt`.
           args: --config src-tauri/tauri.updater.conf.json ${{ matrix.args }}
           # Windows updates run the NSIS installer (same as the main download), not the MSI.
