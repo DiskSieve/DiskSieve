@@ -6,8 +6,9 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::time::Duration;
 
-use disksieve_core::{CancelToken, Delta, ScanTree, Snapshot};
+use disksieve_core::{CancelToken, Delta, DuplicateReport, ScanTree, Snapshot};
 
 /// Handle of the scan currently running.
 #[derive(Debug, Clone)]
@@ -35,6 +36,21 @@ impl Baseline {
     }
 }
 
+/// Handle of the duplicate search currently running.
+#[derive(Debug, Clone)]
+pub struct DuplicateSearch {
+    pub id: u64,
+    pub cancel: CancelToken,
+}
+
+/// Result of the last duplicate search, for the tree of `generation`.
+#[derive(Debug)]
+pub struct DuplicateResults {
+    pub generation: u64,
+    pub report: DuplicateReport,
+    pub duration: Duration,
+}
+
 /// State managed by Tauri (`app.manage(AppState::default())`).
 #[derive(Debug, Default)]
 pub struct AppState {
@@ -43,6 +59,10 @@ pub struct AppState {
     baseline: RwLock<Option<Baseline>>,
     scan: Mutex<Option<ScanHandle>>,
     last_generation: AtomicU64,
+    /// Last duplicate search; belongs to the tree when its generation matches.
+    duplicates: RwLock<Option<DuplicateResults>>,
+    search: Mutex<Option<DuplicateSearch>>,
+    last_search: AtomicU64,
 }
 
 impl AppState {
@@ -74,10 +94,12 @@ impl AppState {
         *slot = None;
         match tree {
             Some(tree) => {
-                // Lock order: scan slot, then tree, then baseline — the same everywhere.
+                // Lock order: scan slot, then tree, then baseline, then duplicates — the same
+                // everywhere.
                 let mut current = self.tree_mut();
                 *current = Some(tree);
                 *self.baseline_mut() = baseline;
+                *self.duplicates_mut() = None;
                 true
             }
             None => false,
@@ -117,6 +139,62 @@ impl AppState {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Registers a new duplicate search, cancelling the one in progress (if any).
+    pub fn begin_duplicates(&self) -> DuplicateSearch {
+        let search = DuplicateSearch {
+            id: self.last_search.fetch_add(1, Ordering::Relaxed) + 1,
+            cancel: CancelToken::new(),
+        };
+        if let Some(previous) = self.search_slot().replace(search.clone()) {
+            previous.cancel.cancel();
+        }
+        search
+    }
+
+    /// Ends duplicate search `id`, storing `results` only if it is still the newest search.
+    pub fn finish_duplicates(&self, id: u64, results: Option<DuplicateResults>) -> bool {
+        let mut slot = self.search_slot();
+        if slot.as_ref().map(|s| s.id) != Some(id) {
+            return false;
+        }
+        *slot = None;
+        match results {
+            Some(results) => {
+                *self.duplicates_mut() = Some(results);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Cancels the duplicate search in progress. Returns `false` when none is running.
+    pub fn cancel_duplicates(&self) -> bool {
+        match self.search_slot().as_ref() {
+            Some(search) => {
+                search.cancel.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Result of the last duplicate search (check its `generation` against the tree).
+    pub fn duplicates(&self) -> RwLockReadGuard<'_, Option<DuplicateResults>> {
+        self.duplicates
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn duplicates_mut(&self) -> RwLockWriteGuard<'_, Option<DuplicateResults>> {
+        self.duplicates
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn search_slot(&self) -> MutexGuard<'_, Option<DuplicateSearch>> {
+        self.search.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     fn scan_slot(&self) -> MutexGuard<'_, Option<ScanHandle>> {
         // A panic while holding the lock cannot leave the handle half-written, so the data
         // is still consistent and the poison flag can be ignored.
@@ -135,6 +213,28 @@ mod tests {
             ..ScanOptions::default()
         };
         scan(dir, &opts, &CancelToken::new(), |_| {}).unwrap()
+    }
+
+    #[test]
+    fn only_the_newest_duplicate_search_is_stored() {
+        let state = AppState::default();
+        let old = state.begin_duplicates();
+        let new = state.begin_duplicates();
+        assert!(
+            old.cancel.is_cancelled(),
+            "a new search cancels the old one"
+        );
+        let results = |generation| DuplicateResults {
+            generation,
+            report: DuplicateReport::default(),
+            duration: Duration::ZERO,
+        };
+        assert!(!state.finish_duplicates(old.id, Some(results(1))));
+        assert!(state.duplicates().is_none());
+        assert!(state.cancel_duplicates());
+        assert!(state.finish_duplicates(new.id, Some(results(2))));
+        assert_eq!(state.duplicates().as_ref().map(|r| r.generation), Some(2));
+        assert!(!state.cancel_duplicates(), "nothing is running any more");
     }
 
     #[test]

@@ -20,6 +20,8 @@ authors = ["DiskSieve Contributors"]
 [workspace.dependencies]
 disksieve-core = { path = "crates/disksieve-core" }
 bitflags = "2"
+# Duplicate finder: fast content hashing (own rayon parallelism across files).
+blake3 = "1.8"
 rayon = "1.12"
 criterion = "0.8"
 fs4 = "1.1"

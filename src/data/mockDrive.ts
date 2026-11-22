@@ -97,6 +97,8 @@ function buildTree(): FsNode {
     file("Win11_23H2_x64.iso", 6.2 * GB, 402),
     file("dataset-imagenet-subset.tar", 11.4 * GB, 0, { deltaBytes: 11.4 * GB }),
     file("Figma-Setup.exe", 210 * MB, 41),
+    file("Figma-Setup (1).exe", 210 * MB, 40),
+    file("Figma-Setup (2).exe", 210 * MB, 3),
     file("photos-backup-2023.zip", 8.3 * GB, 560),
     file("conference-talk.mp4", 2.4 * GB, 92),
     file("node-v22.11.0-x64.msi", 31 * MB, 30),
@@ -118,7 +120,9 @@ function buildTree(): FsNode {
   ]);
   const users = dir("Users", [
     dir("dev", [projects, downloads, appData,
-      dir("Documents", [blob("Invoices", 420 * MB, 680, 60), blob("Thesis", 1.8 * GB, 320, 720), file("tax-2025.pdf", 14 * MB, 200)]),
+      dir("Documents", [blob("Invoices", 420 * MB, 680, 60), blob("Thesis", 1.8 * GB, 320, 720), file("tax-2025.pdf", 14 * MB, 200),
+        dir("Backups", [file("photos-backup-2023.zip", 8.3 * GB, 410)])]),
+      dir("Desktop", [file("drone-iceland-export.mp4", 9.4 * GB, 470), file("notes.txt", 12_000, 2)]),
       dir("Pictures", [blob("Camera Roll", 18.4 * GB, 9200, 8), blob("Screenshots", 2.2 * GB, 4100, 0, { deltaBytes: 40 * MB })]),
     ]),
     dir("Public", [blob("Shared", 340 * MB, 120, 600)]),
@@ -143,10 +147,13 @@ function buildTree(): FsNode {
       file("drone-iceland.mp4", 9.4 * GB, 480),
       file("screen-recording-sprint.mkv", 4.8 * GB, 0, { deltaBytes: 4.8 * GB }),
       file("family-2019.mp4", 3.1 * GB, 940),
+      dir("talks", [file("conference-talk.mp4", 2.4 * GB, 90)]),
     ]),
+    dir("Archive", [file("photos-backup-2023 (1).zip", 8.3 * GB, 12)]),
     blob("Music", 14.6 * GB, 5200, 300),
   ]);
-  const root = dir("C:\\", [users, games, windows, media,
+  const vms = dir("VMs", [dir("isos", [file("ubuntu-24.04.iso", 5.7 * GB, 150)])]);
+  const root = dir("C:\\", [users, games, windows, media, vms,
     file("hiberfil.sys", 12.8 * GB, 0),
     file("pagefile.sys", 16 * GB, 0),
     blob("Program Files", 24.3 * GB, 81000, 18),
@@ -202,27 +209,11 @@ export const initialDrive = buildTree();
 export const DRIVE_CAPACITY = 1024 * GB;
 export const TOTAL_FILES = 842190;
 
-export interface DupGroup { id: string; name: string; hash: string; sizeBytes: number; copies: { path: string; daysAgo: number }[] }
-
-export const duplicateGroups: DupGroup[] = [
-  { id: "d1", name: "photos-backup-2023.zip", hash: "b3:9f82a4…c10e", sizeBytes: 1.5 * GB, copies: [
-    { path: "C:\\Users\\dev\\Downloads\\photos-backup-2023.zip", daysAgo: 560 },
-    { path: "C:\\Users\\dev\\Documents\\Backups\\photos-backup-2023.zip", daysAgo: 410 },
-    { path: "C:\\Media\\Archive\\photos-backup-2023 (1).zip", daysAgo: 12 }] },
-  { id: "d2", name: "ubuntu-24.04.iso", hash: "b3:41ce07…8a2f", sizeBytes: 5.7 * GB, copies: [
-    { path: "C:\\Users\\dev\\Downloads\\ubuntu-24.04.iso", daysAgo: 188 },
-    { path: "C:\\VMs\\isos\\ubuntu-24.04.iso", daysAgo: 150 }] },
-  { id: "d3", name: "conference-talk.mp4", hash: "b3:c2d9e1…04b7", sizeBytes: 2.4 * GB, copies: [
-    { path: "C:\\Users\\dev\\Downloads\\conference-talk.mp4", daysAgo: 92 },
-    { path: "C:\\Media\\Videos\\talks\\conference-talk.mp4", daysAgo: 90 }] },
-  { id: "d4", name: "Figma-Setup.exe", hash: "b3:7a10bb…e93d", sizeBytes: 210 * MB, copies: [
-    { path: "C:\\Users\\dev\\Downloads\\Figma-Setup.exe", daysAgo: 41 },
-    { path: "C:\\Users\\dev\\Downloads\\Figma-Setup (1).exe", daysAgo: 40 },
-    { path: "C:\\Users\\dev\\Downloads\\Figma-Setup (2).exe", daysAgo: 3 }] },
-  { id: "d5", name: "model-weights-v3.safetensors", hash: "b3:e5f601…7d21", sizeBytes: 1.6 * GB, copies: [
-    { path: "C:\\Users\\dev\\Projects\\ml-pipeline\\models\\model-weights-v3.safetensors", daysAgo: 128 },
-    { path: "C:\\Users\\dev\\.cache\\huggingface\\model-weights-v3.safetensors", daysAgo: 130 }] },
-  { id: "d6", name: "drone-iceland.mp4", hash: "b3:0b3a9c…f5e8", sizeBytes: 1.08 * GB, copies: [
-    { path: "C:\\Media\\Videos\\drone-iceland.mp4", daysAgo: 480 },
-    { path: "C:\\Users\\dev\\Desktop\\drone-iceland-export.mp4", daysAgo: 470 }] },
+/** Demo duplicate groups: paths of identical files in the demo tree (see `findDuplicates`). */
+export const MOCK_DUPLICATES: { hash: string; paths: string[] }[] = [
+  { hash: "9f82a4", paths: ["C:\\Users\\dev\\Downloads\\photos-backup-2023.zip", "C:\\Users\\dev\\Documents\\Backups\\photos-backup-2023.zip", "C:\\Media\\Archive\\photos-backup-2023 (1).zip"] },
+  { hash: "0b3a9c", paths: ["C:\\Media\\Videos\\drone-iceland.mp4", "C:\\Users\\dev\\Desktop\\drone-iceland-export.mp4"] },
+  { hash: "41ce07", paths: ["C:\\Users\\dev\\Downloads\\ubuntu-24.04.iso", "C:\\VMs\\isos\\ubuntu-24.04.iso"] },
+  { hash: "c2d9e1", paths: ["C:\\Users\\dev\\Downloads\\conference-talk.mp4", "C:\\Media\\Videos\\talks\\conference-talk.mp4"] },
+  { hash: "7a10bb", paths: ["C:\\Users\\dev\\Downloads\\Figma-Setup.exe", "C:\\Users\\dev\\Downloads\\Figma-Setup (1).exe", "C:\\Users\\dev\\Downloads\\Figma-Setup (2).exe"] },
 ];

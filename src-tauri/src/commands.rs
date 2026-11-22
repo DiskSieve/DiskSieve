@@ -3,13 +3,14 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use disksieve_core::{
-    build_viewport, detect_junk, is_volume_root, junk_projects, list_changes, load_previous,
-    move_to_system_trash, restore_from_system_trash, review_sieve as review_basket, snapshot_path,
-    Advisor, CoreError, Guard, Platform, ScanOptions, ScanTree, Snapshot, SpaceBalance,
-    ViewportOptions, DEFAULT_CHANGES_LIMIT, DEFAULT_SEARCH_LIMIT, RESTORE_SUPPORTED, ROOT,
+    build_viewport, detect_junk, duplicate_candidates, is_volume_root, junk_projects, list_changes,
+    load_previous, move_to_system_trash, restore_from_system_trash, review_sieve as review_basket,
+    snapshot_path, Advisor, CoreError, Guard, Platform, ScanOptions, ScanTree, Snapshot,
+    SpaceBalance, ViewportOptions, DEFAULT_CHANGES_LIMIT, DEFAULT_SEARCH_LIMIT, MIN_DUPLICATE_SIZE,
+    RESTORE_SUPPORTED, ROOT,
 };
 use sysinfo::{DiskKind, Disks};
 use tauri::ipc::Channel;
@@ -18,10 +19,11 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::dto::{
-    AdviceDto, AppInfoDto, ChangeKindDto, ChangesDto, DevJunkDto, DriveDto, ScanProgressDto,
-    ScanSummaryDto, SearchResultDto, SieveDto, SizeMetricDto, TrashReportDto, ViewportDto,
+    AdviceDto, AppInfoDto, ChangeKindDto, ChangesDto, DevJunkDto, DriveDto, DuplicateProgressDto,
+    DuplicatesDto, ScanProgressDto, ScanSummaryDto, SearchResultDto, SieveDto, SizeMetricDto,
+    TrashReportDto, ViewportDto,
 };
-use crate::state::{AppState, Baseline};
+use crate::state::{AppState, Baseline, DuplicateResults};
 
 /// Returns static information about the running application.
 #[tauri::command]
@@ -233,6 +235,92 @@ pub async fn get_changes(
 
 /// Upper bound for `get_changes`' `limit`, so one IPC answer stays small.
 const MAX_CHANGES_LIMIT: usize = 2_000;
+
+/// Minimum time between two duplicate search progress messages.
+const DUPLICATE_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Searches scan `generation` for files with identical content, streaming progress through
+/// `on_progress`. Starting a search cancels the one in progress. Returns `None` when it was
+/// cancelled or superseded.
+#[tauri::command]
+pub async fn find_duplicates(
+    app: AppHandle,
+    generation: u64,
+    on_progress: Channel<DuplicateProgressDto>,
+) -> Result<Option<DuplicatesDto>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        // Paths are copied out, so the tree is not locked while files are read.
+        let candidates = {
+            let slot = state.tree();
+            duplicate_candidates(current(slot.as_ref(), generation)?, MIN_DUPLICATE_SIZE)
+        };
+        let search = state.begin_duplicates();
+        let started = Instant::now();
+        let outcome = disksieve_core::find_duplicates(
+            candidates.files,
+            &search.cancel,
+            DUPLICATE_PROGRESS_INTERVAL,
+            |p| {
+                let dto = DuplicateProgressDto::new(generation, &p, started.elapsed());
+                if on_progress.send(dto).is_err() {
+                    search.cancel.cancel(); // the window is gone
+                }
+            },
+        );
+        match outcome {
+            Ok(mut report) => {
+                report.skipped = report.skipped.saturating_add(candidates.unresolved);
+                let results = DuplicateResults {
+                    generation,
+                    report,
+                    duration: started.elapsed(),
+                };
+                if !state.finish_duplicates(search.id, Some(results)) {
+                    return Ok(None);
+                }
+                duplicates_dto(&state, generation)
+            }
+            Err(CoreError::Cancelled) => {
+                state.finish_duplicates(search.id, None);
+                Ok(None)
+            }
+            Err(e) => {
+                state.finish_duplicates(search.id, None);
+                Err(e.to_string())
+            }
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Result of the last duplicate search of scan `generation`, without copies trashed since;
+/// `None` when no search finished for this scan.
+#[tauri::command]
+pub async fn get_duplicates(
+    state: State<'_, AppState>,
+    generation: u64,
+) -> Result<Option<DuplicatesDto>, String> {
+    duplicates_dto(&state, generation)
+}
+
+/// Cancels the duplicate search in progress. Returns `false` when none was running.
+#[tauri::command]
+pub fn cancel_duplicates(state: State<'_, AppState>) -> bool {
+    state.cancel_duplicates()
+}
+
+fn duplicates_dto(state: &AppState, generation: u64) -> Result<Option<DuplicatesDto>, String> {
+    // Lock order: tree, then duplicates.
+    let slot = state.tree();
+    let tree = current(slot.as_ref(), generation)?;
+    let results = state.duplicates();
+    Ok(results
+        .as_ref()
+        .filter(|r| r.generation == generation)
+        .map(|r| DuplicatesDto::new(tree, &r.report, r.duration)))
+}
 
 /// Dev Junk of scan `generation`: projects with rebuildable artifacts, largest first.
 /// Artifacts are detected when the scan finishes and refreshed after trash / restore.
