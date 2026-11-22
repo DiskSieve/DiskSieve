@@ -670,7 +670,7 @@ impl DuplicatesDto {
                 })
             })
             .collect();
-        groups.sort_by(|a, b| b.wasted_bytes.cmp(&a.wasted_bytes));
+        groups.sort_by_key(|g| std::cmp::Reverse(g.wasted_bytes));
         let group_count = u32::try_from(groups.len()).unwrap_or(u32::MAX);
         let copy_count = groups.iter().map(|g| g.copies.len()).sum::<usize>();
         let wasted_bytes = groups.iter().map(|g| g.wasted_bytes).sum();
