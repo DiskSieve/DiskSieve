@@ -3,8 +3,8 @@
 // Inside the desktop app every call goes to Rust. In a plain browser (`npm run dev`) there is
 // no Tauri runtime, so the same functions resolve with demo data — the UI code never branches.
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { AdviceDto, AppInfoDto, ChangeDto, ChangeKindDto, ChangesDto, DevJunkDto, DriveDto, JunkProjectDto, ScanProgressDto, ScanSummaryDto, SearchResultDto, SieveDto, SieveItemDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
-import { DRIVE_CAPACITY, TOTAL_FILES, findPath, flatten, initialDrive, type FsNode, type JunkTag } from "@/data/mockDrive";
+import type { AdviceDto, AppInfoDto, ChangeDto, ChangeKindDto, ChangesDto, DevJunkDto, DriveDto, DuplicateGroupDto, DuplicateProgressDto, DuplicatesDto, JunkProjectDto, ScanProgressDto, ScanSummaryDto, SearchResultDto, SieveDto, SieveItemDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
+import { DRIVE_CAPACITY, MOCK_DUPLICATES, TOTAL_FILES, findPath, flatten, initialDrive, type FsNode, type JunkTag } from "@/data/mockDrive";
 import { CONTAINS_JUNK_FLAG } from "@/lib/treemap-palette";
 import { version as appVersion } from "../../package.json";
 
@@ -33,6 +33,9 @@ interface Commands {
   get_viewport: { args: { generation: number; nodeId: number | null; metric: SizeMetricDto; delta: boolean }; result: ViewportDto };
   get_dev_junk: { args: { generation: number }; result: DevJunkDto };
   get_changes: { args: { generation: number; kind: ChangeKindDto | null; limit: number | null }; result: ChangesDto };
+  find_duplicates: { args: { generation: number; onProgress: Channel<DuplicateProgressDto> }; result: DuplicatesDto | null };
+  get_duplicates: { args: { generation: number }; result: DuplicatesDto | null };
+  cancel_duplicates: { args: NoArgs; result: boolean };
   get_advice: { args: { generation: number; nodeId: number }; result: AdviceDto };
   review_sieve: { args: { generation: number; nodeIds: number[] }; result: SieveDto };
   search_nodes: { args: { generation: number; query: string; metric: SizeMetricDto; limit: number | null }; result: SearchResultDto };
@@ -347,6 +350,70 @@ function mockChanges(generation: number, kind: ChangeKindDto | null, limit: numb
   };
 }
 
+/** Demo duplicate search finished for this generation (results are rebuilt from `mockTree`). */
+let mockDupSearch: { generation: number; durationMs: number } | null = null;
+let cancelMockDups: (() => void) | null = null;
+const MOCK_DUP_MS = 1800;
+/** Files of a shared size the demo "checks" besides the real duplicates. */
+const MOCK_DUP_EXTRA_FILES = 1342;
+
+/** Demo duplicates: `MOCK_DUPLICATES` resolved against the current demo tree (trashed copies drop out). */
+function mockDuplicates(generation: number): DuplicatesDto | null {
+  if (!mockDupSearch || mockDupSearch.generation !== generation) return null;
+  const nowSecs = Math.floor(Date.now() / 1000);
+  const byPath = new Map<string, { n: FsNode; parent: FsNode }>();
+  const walk = (n: FsNode) => n.children?.forEach((c) => { byPath.set(c.path, { n: c, parent: n }); walk(c); });
+  walk(mockTree);
+  const groups: DuplicateGroupDto[] = [];
+  for (const g of MOCK_DUPLICATES) {
+    const found = g.paths.flatMap((p) => byPath.get(p) ?? []).sort((a, b) => b.n.lastModifiedDaysAgo - a.n.lastModifiedDaysAgo);
+    if (found.length < 2) continue;
+    const size = found[0].n.sizeBytes;
+    groups.push({
+      hash: (g.hash + "e1d4c07b93a25f68").repeat(3).slice(0, 64), name: found[0].n.name, sizeBytes: size, wastedBytes: size * (found.length - 1),
+      copies: found.map(({ n, parent }) => ({ nodeId: mockNodeId(n), folderId: mockNodeId(parent), path: n.path, mtime: nowSecs - n.lastModifiedDaysAgo * 86_400 })),
+    });
+  }
+  groups.sort((a, b) => b.wastedBytes - a.wastedBytes);
+  const copyCount = groups.reduce((a, g) => a + g.copies.length, 0);
+  return {
+    generation, groups, groupCount: groups.length, copyCount, wastedBytes: groups.reduce((a, g) => a + g.wastedBytes, 0),
+    filesChecked: MOCK_DUP_EXTRA_FILES + copyCount, bytesRead: 61.3 * 1024 ** 3, skipped: 2, durationMs: mockDupSearch.durationMs,
+  };
+}
+
+/** Demo duplicate search: a quick pass, then a full pass, with progress ~10× per second. */
+function mockFindDuplicates(generation: number, onProgress: (p: DuplicateProgressDto) => void): Promise<DuplicatesDto | null> {
+  cancelMockDups?.();
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const quickFiles = MOCK_DUP_EXTRA_FILES + 12;
+    const fullFiles = 14;
+    const quickBytes = quickFiles * 32 * 1024;
+    const fullBytes = 42.6 * 1024 ** 3;
+    const timer = setInterval(() => {
+      const t = Math.min(1, (Date.now() - started) / MOCK_DUP_MS);
+      const quick = t < 0.35;
+      const f = quick ? t / 0.35 : (t - 0.35) / 0.65;
+      onProgress({
+        generation, phase: quick ? "quick" : "full", elapsedMs: Date.now() - started,
+        filesDone: Math.round(f * (quick ? quickFiles : fullFiles)), filesTotal: quick ? quickFiles : fullFiles,
+        bytesDone: Math.round(f * (quick ? quickBytes : fullBytes)), bytesTotal: quick ? quickBytes : fullBytes,
+      });
+      if (t < 1) return;
+      clearInterval(timer);
+      cancelMockDups = null;
+      mockDupSearch = { generation, durationMs: Date.now() - started };
+      resolve(mockDuplicates(generation));
+    }, 100);
+    cancelMockDups = () => {
+      clearInterval(timer);
+      cancelMockDups = null;
+      resolve(null);
+    };
+  });
+}
+
 /** Demo Dev Junk, same shape and rules as `junk_projects` in Rust. */
 function mockDevJunk(generation: number): DevJunkDto {
   const nowSecs = Math.floor(Date.now() / 1000);
@@ -467,6 +534,33 @@ export const reviewSieve = (generation: number, nodeIds: number[]): Promise<Siev
  */
 export const searchNodes = (generation: number, query: string, metric: SizeMetricDto, limit = SEARCH_LIMIT): Promise<SearchResultDto> =>
   isTauri() ? call("search_nodes", { generation, query, metric, limit }) : Promise.resolve(mockSearch(generation, query, metric, limit));
+
+/**
+ * Searches scan `generation` for files with identical content (reads the files: size, then
+ * the first and last 16 KiB, then the full `blake3` hash), calling `onProgress` up to ~10
+ * times per second. Resolves with the groups, or `null` when cancelled or superseded.
+ */
+export const findDuplicates = (
+  generation: number,
+  onProgress: (progress: DuplicateProgressDto) => void,
+): Promise<DuplicatesDto | null> => {
+  if (!isTauri()) return mockFindDuplicates(generation, onProgress);
+  const channel = new Channel<DuplicateProgressDto>();
+  channel.onmessage = onProgress;
+  return call("find_duplicates", { generation, onProgress: channel });
+};
+
+/** Last duplicate search of scan `generation` without copies trashed since; `null` when none finished. */
+export const getDuplicates = (generation: number): Promise<DuplicatesDto | null> =>
+  isTauri() ? call("get_duplicates", { generation }) : Promise.resolve(mockDuplicates(generation));
+
+/** Cancels the duplicate search in progress; `false` when nothing was running. */
+export const cancelDuplicates = (): Promise<boolean> => {
+  if (isTauri()) return call("cancel_duplicates", {});
+  const running = cancelMockDups !== null;
+  cancelMockDups?.();
+  return Promise.resolve(running);
+};
 
 /** Cancels the scan in progress; `false` when nothing was running. */
 export const cancelScan = (): Promise<boolean> => {

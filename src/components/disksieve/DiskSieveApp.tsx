@@ -15,7 +15,7 @@ import { ChangesView } from "./ChangesView";
 import { SieveBasket } from "./SieveBasket";
 import { LEVELS } from "@/lib/advice";
 import { SearchPalette } from "./SearchPalette";
-import { DuplicatesView, initialDuplicates, wastedBytes } from "./DuplicatesView";
+import { DuplicatesView } from "./DuplicatesView";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
@@ -29,8 +29,8 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
-import { appInfo, cancelScan, getAdvice, getDevJunk, getViewport, isTauri, listDrives, mockNodeId, openTrash, pickFolder, restoreNodes, revealInExplorer, reviewSieve, setMockTree, startScan, trashNodes } from "@/lib/ipc";
-import type { AdviceDto, AppInfoDto, DevJunkDto, DriveDto, ScanProgressDto, ScanSummaryDto, SieveDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
+import { appInfo, cancelDuplicates, cancelScan, findDuplicates, getAdvice, getDevJunk, getDuplicates, getViewport, isTauri, listDrives, mockNodeId, openTrash, pickFolder, restoreNodes, revealInExplorer, reviewSieve, setMockTree, startScan, trashNodes } from "@/lib/ipc";
+import type { AdviceDto, AppInfoDto, DevJunkDto, DriveDto, DuplicateProgressDto, DuplicatesDto, ScanProgressDto, ScanSummaryDto, SieveDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
 
 type Tab = "explorer" | "changes" | "junk" | "dups";
 const MODES: { key: ColorMode; label: string }[] = [{ key: "extension", label: "By Extension" }, { key: "age", label: "Cold Data (Age)" }, { key: "junk", label: "Dev Junk" }];
@@ -71,7 +71,10 @@ export function DiskSieveApp() {
   const [inspected, setInspected] = useState<TreemapNodeDto | null>(null);
   const [ctxNode, setCtxNode] = useState<TreemapNodeDto | null>(null);
   const [cmdOpen, setCmdOpen] = useState(false);
-  const [dups, setDups] = useState(initialDuplicates);
+  // Duplicates of the current scan: searched on demand (reads file contents), kept in Rust.
+  const [dups, setDups] = useState<DuplicatesDto | null>(null);
+  const [dupProgress, setDupProgress] = useState<DuplicateProgressDto | null>(null);
+  const [dupSearching, setDupSearching] = useState(false);
   const [scan, setScan] = useState<ScanState | null>(null);
   const [summary, setSummary] = useState<ScanSummaryDto | null>(null);
   // "What do you want to scan?" — shown at startup until something is scanned.
@@ -141,6 +144,36 @@ export function DiskSieveApp() {
       .catch((e: Error) => { if (live) setDevJunkError(e.message); });
     return () => { live = false; };
   }, [generation, tree, treeVersion]);
+
+  // A new scan makes the running duplicate search pointless; its results are dropped in Rust.
+  useEffect(() => {
+    void cancelDuplicates();
+  }, [generation]);
+  // Refetched after trash / restore so trashed copies (and groups left with one copy) drop out.
+  useEffect(() => {
+    if (generation === null) {
+      setDups(null);
+      return;
+    }
+    let live = true;
+    // After the parent's effects, so the browser demo sees its updated tree.
+    Promise.resolve()
+      .then(() => getDuplicates(generation))
+      .then((d) => { if (live) setDups(d && d.generation === generation ? d : null); })
+      .catch(() => { if (live) setDups(null); });
+    return () => { live = false; };
+  }, [generation, tree, treeVersion]);
+
+  const searchDuplicates = () => {
+    if (generation === null || dupSearching) return;
+    const gen = generation;
+    setDupSearching(true);
+    setDupProgress(null);
+    findDuplicates(gen, (p) => { if (p.generation === gen) setDupProgress(p); })
+      .then((d) => { if (d && d.generation === gen) setDups(d); })
+      .catch((e: Error) => toast.error("Duplicate search failed", { description: e.message }))
+      .finally(() => { setDupSearching(false); setDupProgress(null); });
+  };
 
   // Safety Advisor verdict of the inspected node, refreshed when trash / restore changes the tree.
   const [advice, setAdvice] = useState<AdviceDto | null>(null);
@@ -418,7 +451,7 @@ export function DiskSieveApp() {
               <TabsTrigger value="explorer" className="flex-1 text-xs">Explorer</TabsTrigger>
               <TabsTrigger value="changes" className="flex-1 text-xs">Changes</TabsTrigger>
               <TabsTrigger value="junk" className="flex-1 gap-1.5 text-xs">Dev Junk <Badge className="h-4 px-1.5 font-mono text-[10px]">{devJunk ? formatBytes(devJunk.allocatedBytes) : "—"}</Badge></TabsTrigger>
-              <TabsTrigger value="dups" className="flex-1 gap-1.5 text-xs">Duplicates <Badge variant="secondary" className="h-4 px-1.5 font-mono text-[10px]">{formatBytes(wastedBytes(dups))}</Badge></TabsTrigger>
+              <TabsTrigger value="dups" className="flex-1 gap-1.5 text-xs">Duplicates <Badge variant="secondary" className="h-4 px-1.5 font-mono text-[10px]">{dups ? formatBytes(dups.wastedBytes) : "—"}</Badge></TabsTrigger>
             </TabsList>
           </Tabs>
 
@@ -562,7 +595,9 @@ export function DiskSieveApp() {
           onTrash={setConfirmTrash} onSieve={addToSieve} onReveal={(id, path) => reveal({ id, path })} onScan={() => setTargetOpen(true)} />}
         {tab === "changes" && <ChangesView generation={generation} refreshKey={isTauri() ? treeVersion : tree} previousScanAt={previousScanAt}
           onOpenFolder={(id) => { setTab("explorer"); setCurrentId(id); }} onSieve={addToSieve} onScan={() => setTargetOpen(true)} />}
-        {tab === "dups" && <DuplicatesView groups={dups} setGroups={setDups} />}
+        {tab === "dups" && <DuplicatesView generation={generation} data={dups} searching={dupSearching} progress={dupProgress} basket={basket}
+          onSearch={searchDuplicates} onCancel={() => void cancelDuplicates()} onOpenFolder={(id) => { setTab("explorer"); setCurrentId(id); }}
+          onSieve={addToSieve} onScan={() => setTargetOpen(true)} />}
 
         {/* Inspector */}
         <Sheet open={!!inspected} onOpenChange={(o) => !o && setInspected(null)}>

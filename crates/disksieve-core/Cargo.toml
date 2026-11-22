@@ -12,6 +12,7 @@ authors.workspace = true
 # NOTE: this crate must never depend on `tauri`, `webview2`, `webkit2gtk` or any windowing layer.
 [dependencies]
 bitflags.workspace = true
+blake3.workspace = true
 postcard.workspace = true
 rayon.workspace = true
 serde.workspace = true

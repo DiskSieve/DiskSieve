@@ -10,6 +10,7 @@ pub mod aggregator;
 pub mod balance;
 pub mod changes;
 pub mod dev_junk;
+pub mod duplicates;
 pub mod error;
 pub mod safety;
 pub mod safety_advisor;
@@ -28,6 +29,10 @@ pub use changes::{
     list_changes, Change, ChangeItem, ChangeKind, ChangeList, KindTotal, DEFAULT_CHANGES_LIMIT,
 };
 pub use dev_junk::{contains_junk, detect_junk, junk_projects, JunkKind, JunkProject};
+pub use duplicates::{
+    duplicate_candidates, find_duplicates, Candidate, Candidates, DuplicateGroup, DuplicatePhase,
+    DuplicateProgress, DuplicateReport, MIN_DUPLICATE_SIZE,
+};
 pub use error::{CoreError, CoreResult};
 pub use safety::{
     move_to_system_trash, restore_from_system_trash, restore_nodes, trash_nodes, verify_unchanged,

@@ -82,13 +82,13 @@ Existing tools show *what* takes up space, then leave you alone with the harder 
 | ✅ | **Sieve Basket** | Collect items from the treemap and Dev Junk, see the total space reclaimed, the Safety Advisor verdicts and warnings, then move them all to Trash with one confirmation. Items inside a collected folder are counted once; protected items are skipped. |
 | ✅ | **Delta Mode** | Every scan saves a small snapshot. Scan the same drive or folder again and switch on *Delta vs. previous scan*: the treemap shows what grew, the list shows growth in green, shrinkage in red and removed items crossed out — sorted by change. A folder scan also compares against an earlier scan of the whole drive. |
 | ✅ | **Changes view** | A `git diff`-style list of everything that appeared, grew, shrank or disappeared since the previous scan — with totals and filters, jump to the item in the Explorer, or add it to the Sieve. |
-| 🗓️ | **Duplicates** | Size → partial hash → full BLAKE3, skipping hard links and cloud-only files. |
+| ✅ | **Duplicates** | Size → first and last 16 KiB → full BLAKE3, skipping hard links and cloud-only files; pick the copy to keep and send the rest to the Sieve. |
 | 🗓️ | **NTFS MFT engine** | WizTree-class scan speed on Windows (1 million files in under 3 s). |
 | 🗓️ | **CLI and reports** | `disksieve scan <path> --json` for scripts and CI; CSV / JSON / Markdown export. |
 
 ## Project status
 
-**`v0.1.0`** — the MVP — is complete. `v0.2.0` is in progress: the Safety Advisor, the Sieve Basket, Delta Mode and the Changes view are done; next up are duplicates.
+**`v0.1.0`** — the MVP — is complete. All `v0.2.0` features are done: the Safety Advisor, the Sieve Basket, Delta Mode, the Changes view and duplicates. Next up is `v0.3.0` (NTFS MFT engine and full size accuracy).
 
 | Phase | Scope | Status |
 | :--- | :--- | :---: |
@@ -140,7 +140,7 @@ Existing tools show *what* takes up space, then leave you alone with the harder 
 - [x] Sieve Basket
 - [x] Scan snapshots and Delta Mode
 - [x] Changes view (`git diff` style)
-- [ ] Duplicate finder (BLAKE3)
+- [x] Duplicate finder (BLAKE3)
 
 ### `v0.3.0` — Speed and accuracy
 - [ ] NTFS MFT engine (Windows)
@@ -251,7 +251,7 @@ Release notes live in [`CHANGELOG.md`](CHANGELOG.md): the section of the tagged 
 disksieve/
 ├── crates/
 │   ├── disksieve-core/   # Pure Rust library: scanner, arena tree, viewport projection, space balance,
-│   │                     # delete guard, Dev Junk (later: duplicates, snapshots). No UI dependencies.
+│   │                     # delete guard, Dev Junk, Safety Advisor, snapshots, duplicates. No UI deps.
 │   └── disksieve-cli/    # Terminal mode on the same core (placeholder until v0.4.0)
 ├── src-tauri/            # Thin desktop layer: IPC commands, app state, DTOs
 └── src/                  # React 19 + TypeScript + Tailwind CSS v4 + shadcn/ui + ECharts

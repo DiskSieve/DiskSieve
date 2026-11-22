@@ -6,10 +6,10 @@
 //! on 64-bit integers (values stay below 2^53).
 
 use disksieve_core::{
-    contains_junk, Advice, Change, ChangeItem, ChangeKind, ChangeList, Delta, JunkKind,
-    JunkProject, Node, NodeFlags, NodeId, OtherBucket, SafetyLevel, ScanProgress, ScanTree,
-    SearchResult, SieveReview, SieveStatus, SizeMetric, SpaceBalance, TrashError, TrashOutcome,
-    Viewport, ROOT,
+    contains_junk, Advice, Change, ChangeItem, ChangeKind, ChangeList, Delta, DuplicatePhase,
+    DuplicateProgress, DuplicateReport, JunkKind, JunkProject, Node, NodeFlags, NodeId,
+    OtherBucket, SafetyLevel, ScanProgress, ScanTree, SearchResult, SieveReview, SieveStatus,
+    SizeMetric, SpaceBalance, TrashError, TrashOutcome, Viewport, ROOT,
 };
 use std::time::Duration;
 
@@ -529,6 +529,164 @@ fn change_dto(tree: &ScanTree, delta: &Delta, c: &Change) -> Option<ChangeDto> {
             after_size: None,
         },
     })
+}
+
+/// Pass of the duplicate search that is running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum DuplicatePhaseDto {
+    /// Hashing the first and last 16 KiB of every file of a shared size.
+    Quick,
+    /// Hashing the whole content of the files that passed the quick check.
+    Full,
+}
+
+/// Progress of a duplicate search, streamed through a `Channel` at most ~10 times per second.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DuplicateProgressDto {
+    #[ts(type = "number")]
+    pub generation: u64,
+    pub phase: DuplicatePhaseDto,
+    pub files_done: u32,
+    pub files_total: u32,
+    #[ts(type = "number")]
+    pub bytes_done: u64,
+    #[ts(type = "number")]
+    pub bytes_total: u64,
+    #[ts(type = "number")]
+    pub elapsed_ms: u64,
+}
+
+impl DuplicateProgressDto {
+    pub fn new(generation: u64, p: &DuplicateProgress, elapsed: Duration) -> Self {
+        Self {
+            generation,
+            phase: match p.phase {
+                DuplicatePhase::Quick => DuplicatePhaseDto::Quick,
+                DuplicatePhase::Full => DuplicatePhaseDto::Full,
+            },
+            files_done: p.files_done,
+            files_total: p.files_total,
+            bytes_done: p.bytes_done,
+            bytes_total: p.bytes_total,
+            elapsed_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+        }
+    }
+}
+
+/// One copy of a duplicated file.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DuplicateCopyDto {
+    pub node_id: u32,
+    /// Folder holding the copy (to open it in the Explorer).
+    pub folder_id: u32,
+    pub path: String,
+    /// Modification time, seconds since the UNIX epoch.
+    pub mtime: u32,
+}
+
+/// Files with identical content; copies oldest first (the one suggested to keep).
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DuplicateGroupDto {
+    /// `blake3` of the content, 64 hex digits.
+    pub hash: String,
+    /// Name of the oldest copy.
+    pub name: String,
+    #[ts(type = "number")]
+    pub size_bytes: u64,
+    /// Freed by keeping one copy: `size × (copies − 1)`.
+    #[ts(type = "number")]
+    pub wasted_bytes: u64,
+    pub copies: Vec<DuplicateCopyDto>,
+}
+
+/// Result of the duplicate search of scan `generation`. Copies trashed since the search are
+/// left out, and so are groups with fewer than two copies left.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DuplicatesDto {
+    #[ts(type = "number")]
+    pub generation: u64,
+    /// Most wasted space first, at most [`MAX_DUPLICATE_GROUPS`].
+    pub groups: Vec<DuplicateGroupDto>,
+    /// All groups, including those not listed.
+    pub group_count: u32,
+    /// Copies in all groups.
+    pub copy_count: u32,
+    /// Freed by keeping one copy of every group.
+    #[ts(type = "number")]
+    pub wasted_bytes: u64,
+    /// Files compared (same size as another file).
+    pub files_checked: u32,
+    /// Bytes read from disk by the search.
+    #[ts(type = "number")]
+    pub bytes_read: u64,
+    /// Files that could not be read or changed since the scan.
+    pub skipped: u32,
+    #[ts(type = "number")]
+    pub duration_ms: u64,
+}
+
+/// Groups sent to the UI at most, so one IPC answer stays small.
+pub const MAX_DUPLICATE_GROUPS: usize = 1_000;
+
+impl DuplicatesDto {
+    pub fn new(tree: &ScanTree, report: &DuplicateReport, duration: Duration) -> Self {
+        let alive = |id: NodeId| {
+            tree.get(id).is_some_and(|n| !n.is_trashed())
+                && !tree
+                    .ancestors(id)
+                    .any(|a| tree.get(a).is_some_and(Node::is_trashed))
+        };
+        let mut groups: Vec<DuplicateGroupDto> = report
+            .groups
+            .iter()
+            .filter_map(|g| {
+                let copies: Vec<DuplicateCopyDto> = g
+                    .copies
+                    .iter()
+                    .filter(|c| alive(c.id))
+                    .map(|c| DuplicateCopyDto {
+                        node_id: c.id,
+                        folder_id: tree.get(c.id).map_or(ROOT, |n| n.parent),
+                        path: tree.display_path(c.id),
+                        mtime: c.mtime,
+                    })
+                    .collect();
+                (copies.len() >= 2).then(|| DuplicateGroupDto {
+                    hash: g.hash_hex(),
+                    name: tree.name(copies[0].node_id).to_owned(),
+                    size_bytes: g.size,
+                    wasted_bytes: g.size.saturating_mul(copies.len() as u64 - 1),
+                    copies,
+                })
+            })
+            .collect();
+        groups.sort_by(|a, b| b.wasted_bytes.cmp(&a.wasted_bytes));
+        let group_count = u32::try_from(groups.len()).unwrap_or(u32::MAX);
+        let copy_count = groups.iter().map(|g| g.copies.len()).sum::<usize>();
+        let wasted_bytes = groups.iter().map(|g| g.wasted_bytes).sum();
+        groups.truncate(MAX_DUPLICATE_GROUPS);
+        Self {
+            generation: tree.generation(),
+            groups,
+            group_count,
+            copy_count: u32::try_from(copy_count).unwrap_or(u32::MAX),
+            wasted_bytes,
+            files_checked: report.files_checked,
+            bytes_read: report.bytes_read,
+            skipped: report.skipped,
+            duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
+        }
+    }
 }
 
 /// A file or folder of the previous scan that is gone now (deleted, moved or trashed).
@@ -1166,6 +1324,80 @@ mod tests {
         assert_eq!(removed.allocated_size, 2 * MIB);
         assert!(!removed.is_dir);
         assert!(removed.path.ends_with("old.bin"), "{}", removed.path);
+    }
+
+    #[test]
+    fn duplicates_drop_trashed_copies_and_recount_waste() {
+        use disksieve_core::{Candidate, DuplicateGroup, DuplicateReport};
+        let dir = EntryMeta {
+            flags: NodeFlags::DIR,
+            ..EntryMeta::default()
+        };
+        let file = |size: u64| EntryMeta {
+            logical_size: size,
+            allocated_size: size,
+            mtime: 1_700_000_000,
+            flags: NodeFlags::empty(),
+        };
+        let mut b = TreeBuilder::new("/scan", 4, dir);
+        let a = b.push(ROOT, OsStr::new("a"), dir).unwrap();
+        let x1 = b.push(a, OsStr::new("x.iso"), file(100)).unwrap();
+        let x2 = b.push(ROOT, OsStr::new("x.iso"), file(100)).unwrap();
+        let x3 = b.push(ROOT, OsStr::new("x (1).iso"), file(100)).unwrap();
+        let y1 = b.push(a, OsStr::new("y.zip"), file(500)).unwrap();
+        let y2 = b.push(ROOT, OsStr::new("y.zip"), file(500)).unwrap();
+        let mut tree = b.finish(Duration::ZERO);
+        let candidate = |id, size, mtime| Candidate {
+            id,
+            size,
+            mtime,
+            path: tree.resolve_path(id).unwrap(),
+        };
+        let report = DuplicateReport {
+            groups: vec![
+                DuplicateGroup {
+                    size: 500,
+                    hash: [0xAB; 32],
+                    copies: vec![candidate(y1, 500, 1), candidate(y2, 500, 2)],
+                },
+                DuplicateGroup {
+                    size: 100,
+                    hash: [0x01; 32],
+                    copies: vec![
+                        candidate(x1, 100, 1),
+                        candidate(x2, 100, 2),
+                        candidate(x3, 100, 3),
+                    ],
+                },
+            ],
+            files_checked: 5,
+            bytes_read: 1_000,
+            skipped: 1,
+        };
+
+        let dto = DuplicatesDto::new(&tree, &report, Duration::from_millis(42));
+        assert_eq!(
+            (dto.group_count, dto.copy_count, dto.wasted_bytes),
+            (2, 5, 700)
+        );
+        assert_eq!(dto.groups[0].hash, "ab".repeat(32));
+        assert_eq!(dto.groups[0].copies[0].folder_id, a);
+        assert_eq!(dto.duration_ms, 42);
+
+        // Trashing folder `a` removes y1 (its group is gone) and x1 (two copies left).
+        tree.mark_trashed(a).unwrap();
+        let dto = DuplicatesDto::new(&tree, &report, Duration::ZERO);
+        assert_eq!(
+            (dto.group_count, dto.copy_count, dto.wasted_bytes),
+            (1, 2, 100)
+        );
+        let ids: Vec<u32> = dto.groups[0].copies.iter().map(|c| c.node_id).collect();
+        assert_eq!(ids, [x2, x3]);
+        assert_eq!(dto.groups[0].name, "x.iso");
+
+        let json = serde_json::to_value(&dto).unwrap();
+        assert_eq!(json["groups"][0]["wastedBytes"], 100, "{json}");
+        assert_eq!(json["groups"][0]["copies"][0]["nodeId"], x2, "{json}");
     }
 
     #[test]
