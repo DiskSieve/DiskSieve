@@ -92,6 +92,12 @@ export function DiskSieveApp() {
   const [devJunk, setDevJunk] = useState<DevJunkDto | null>(null);
   const [devJunkError, setDevJunkError] = useState<string | null>(null);
   const generation = summary?.generation ?? null;
+  // Delta Mode compares with the previous scan of the same location (its snapshot).
+  const previousScanAt = summary?.previousSnapshotAt ?? null;
+  const deltaAvailable = previousScanAt !== null;
+  useEffect(() => {
+    if (!deltaAvailable) setDelta(false);
+  }, [deltaAvailable]);
   const os = info?.os ?? "";
 
   useEffect(() => {
@@ -108,7 +114,7 @@ export function DiskSieveApp() {
     }
     if (!isTauri()) setMockTree(tree);
     const seq = ++viewSeq.current;
-    getViewport(generation, currentId, metric)
+    getViewport(generation, currentId, metric, delta)
       .then((vp) => {
         if (seq !== viewSeq.current || vp.generation !== generation) return;
         setViewport(vp);
@@ -118,7 +124,7 @@ export function DiskSieveApp() {
         if (seq !== viewSeq.current) return;
         setViewportError(e.message);
       });
-  }, [generation, currentId, metric, tree, treeVersion]);
+  }, [generation, currentId, metric, delta, tree, treeVersion]);
   useEffect(() => {
     if (generation === null) {
       setDevJunk(null);
@@ -192,14 +198,21 @@ export function DiskSieveApp() {
 
   const all = useMemo(() => flatten(tree), [tree]);
   const breadcrumbs = viewport?.breadcrumbs ?? [];
-  const valueOf = useCallback((n: TreemapNodeDto) => (delta ? n.deltaBytes ?? 0 : n.value), [delta]);
-  const items = useMemo(() => {
-    const nodes = viewport?.nodes ?? [];
-    return delta ? nodes.filter((n) => (n.deltaBytes ?? 0) > 0).sort((a, b) => valueOf(b) - valueOf(a)) : nodes;
-  }, [viewport, delta, valueOf]);
-  const folderTotal = items.reduce((a, n) => a + Math.max(valueOf(n), 0), 0) || 1;
-  const currentTotal = delta ? items.reduce((a, n) => a + valueOf(n), 0) : viewport?.totalValue ?? 0;
+  // Render what the backend answered, so toggling Delta never mixes sizes and changes.
+  const deltaView = viewport?.deltaMode ?? false;
+  const valueOf = useCallback((n: TreemapNodeDto) => (deltaView ? n.deltaBytes ?? 0 : n.value), [deltaView]);
+  // Delta Mode: the backend lists changed children only, sorted by growth.
+  const items = useMemo(() => viewport?.nodes ?? [], [viewport]);
+  // The treemap can only size tiles by growth; shrinks and removals are in the list.
+  const tiles = useMemo(() => (deltaView ? items.filter((n) => (n.deltaBytes ?? 0) > 0) : items), [items, deltaView]);
+  const removed = deltaView ? viewport?.removed ?? [] : [];
+  const removedCount = deltaView ? viewport?.removedCount ?? 0 : 0;
+  const folderTotal = (deltaView
+    ? items.reduce((a, n) => a + Math.abs(valueOf(n)), 0) + removed.reduce((a, r) => a + r.allocatedSize, 0)
+    : items.reduce((a, n) => a + valueOf(n), 0)) || 1;
+  const currentTotal = deltaView ? viewport?.deltaBytes ?? 0 : viewport?.totalValue ?? 0;
   const itemCount = items.reduce((a, n) => a + (n.id === null ? n.otherCount ?? 0 : 1), 0);
+  const previousScanLabel = previousScanAt !== null ? formatScanDate(previousScanAt) : null;
 
   /** Demo trash: removes nodes from the in-memory demo tree. */
   const trash = useCallback((nodes: FsNode[]) => {
@@ -361,12 +374,11 @@ export function DiskSieveApp() {
     </ContextMenuContent>
   );
   const customRoot = root !== null && !drives.some((d) => d.mountPoint === root) ? root : null;
-  const deltaAvailable = !isTauri();
 
   const emptyMessage = generation === null ? null
     : viewportError ? `Could not load this folder: ${viewportError}`
     : !viewport ? "Loading…"
-    : delta ? "No growth since yesterday in this folder."
+    : deltaView ? (items.length || removed.length ? "Nothing in this folder grew since the previous scan." : "No changes since the previous scan in this folder.")
     : "This folder is empty.";
 
   return (
@@ -417,9 +429,11 @@ export function DiskSieveApp() {
             <Tooltip><TooltipTrigger asChild>
               <label className={cn("flex items-center gap-2 text-xs text-muted-foreground", deltaAvailable ? "cursor-pointer" : "cursor-not-allowed opacity-50")}>
                 <Switch checked={delta} onCheckedChange={setDelta} disabled={!deltaAvailable} />
-                <span className={cn(delta && "text-primary")}><span className="hidden xl:inline">Delta Mode (vs. Yesterday)</span><span className="xl:hidden">Delta</span></span>
+                <span className={cn(delta && "text-primary")}><span className="hidden xl:inline">Delta vs. previous scan</span><span className="xl:hidden">Delta</span></span>
               </label>
-            </TooltipTrigger>{!deltaAvailable && <TooltipContent className="text-xs">Delta Mode arrives with scan snapshots in v0.2.0</TooltipContent>}</Tooltip>
+            </TooltipTrigger><TooltipContent className="text-xs">{previousScanLabel
+              ? <>Changes since the previous scan of this location, <span className="font-mono tabular-nums">{previousScanLabel}</span></>
+              : generation === null ? "Scan a drive or folder first" : "Scan this location again later to see what changed"}</TooltipContent></Tooltip>
           </div>
         </div>
 
@@ -472,7 +486,7 @@ export function DiskSieveApp() {
                 <ContextMenu>
                   <ContextMenuTrigger asChild>
                     <div className="min-h-0 flex-1 overflow-hidden rounded-md">
-                      {items.length ? <Treemap parentName={breadcrumbs[breadcrumbs.length - 1]?.name ?? ""} items={items} valueOf={valueOf} mode={mode} signed={delta} onActivate={activate} onContextTarget={setCtxNode} />
+                      {tiles.length ? <Treemap parentName={breadcrumbs[breadcrumbs.length - 1]?.name ?? ""} items={tiles} valueOf={valueOf} mode={mode} signed={deltaView} onActivate={activate} onContextTarget={setCtxNode} />
                         : <div className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground">{emptyMessage}</div>}
                     </div>
                   </ContextMenuTrigger>
@@ -482,20 +496,22 @@ export function DiskSieveApp() {
                   {legendFor(mode).map((l) => (
                     <span key={l.label} className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm" style={{ background: l.color }} />{l.label}</span>
                   ))}
-                  <span className="ml-auto hidden font-mono sm:inline">{delta ? "showing growth since yesterday" : "right-click a tile for actions"}</span>
+                  <span className="ml-auto hidden font-mono sm:inline">{deltaView ? `showing growth since ${previousScanLabel ?? "the previous scan"}` : "right-click a tile for actions"}</span>
                 </div>
               </div>
 
               <div className="flex min-h-[50vh] flex-col lg:order-1 lg:min-h-0 lg:w-[32%]">
                 <div className="flex items-center justify-between border-b border-border px-4 py-2.5 text-xs text-muted-foreground">
-                  <span className="tabular-nums">{itemCount.toLocaleString()} items · sorted by {delta ? "growth" : metric === "allocated" ? "size on disk" : "logical size"}</span>
-                  <span className="font-mono tabular-nums text-foreground">{formatBytes(currentTotal, delta)}</span>
+                  <span className="tabular-nums">{deltaView
+                    ? `${itemCount.toLocaleString()} changed${removedCount ? ` · ${removedCount.toLocaleString()} removed` : ""} · sorted by change`
+                    : `${itemCount.toLocaleString()} items · sorted by ${metric === "allocated" ? "size on disk" : "logical size"}`}</span>
+                  <span className={cn("font-mono tabular-nums", deltaView ? changeColor(currentTotal) : "text-foreground")}>{formatBytes(currentTotal, deltaView)}</span>
                 </div>
                 <ContextMenu>
                 <ContextMenuTrigger asChild>
                 <div className="min-h-0 flex-1 overflow-auto" onContextMenu={(e) => { if (e.target === e.currentTarget) setCtxNode(null); }}>
                   {items.map((n) => {
-                    const pct = (Math.max(valueOf(n), 0) / folderTotal) * 100;
+                    const pct = (Math.abs(valueOf(n)) / folderTotal) * 100;
                     const isOther = n.id === null;
                     return (
                       <button key={n.id ?? "other"} onClick={() => activate(n)} disabled={isOther}
@@ -510,11 +526,27 @@ export function DiskSieveApp() {
                           <Badge key={f} variant="outline" className="relative h-4 border-warning/40 px-1.5 text-[9px] text-warning">{FLAG_LABELS[f]}</Badge>
                         ))}
                         <span className="relative hidden w-14 shrink-0 text-right font-mono text-[11px] tabular-nums sm:inline text-muted-foreground">{formatMtime(n.newestMtime)}</span>
-                        <span className={cn("relative w-20 shrink-0 text-right font-mono text-xs tabular-nums", delta && "text-primary")}>{formatBytes(valueOf(n), delta)}</span>
+                        <span className={cn("relative w-20 shrink-0 text-right font-mono text-xs tabular-nums", deltaView && changeColor(valueOf(n)))}>{formatBytes(valueOf(n), deltaView)}</span>
                         {n.isDir ? <ChevronRight className="relative h-3.5 w-3.5 text-muted-foreground opacity-0 group-hover:opacity-100" /> : <span className="w-3.5" />}
                       </button>
                     );
                   })}
+                  {removed.map((r) => (
+                    <div key={`removed:${r.name}`} title={`${r.path} — removed since the previous scan`}
+                      className="relative flex w-full items-center gap-2.5 border-b border-border/60 px-4 py-2 text-sm text-destructive/90">
+                      <span className="absolute inset-y-0 left-0 bg-destructive/10" style={{ width: `${(r.allocatedSize / folderTotal) * 100}%` }} />
+                      {r.isDir ? <Folder className="relative h-4 w-4 shrink-0" /> : <File className="relative h-4 w-4 shrink-0" />}
+                      <span className="relative min-w-0 flex-1 truncate line-through decoration-destructive/60">{r.name}</span>
+                      <Badge variant="outline" className="relative h-4 border-destructive/40 px-1.5 text-[9px] text-destructive">removed</Badge>
+                      <span className="relative w-20 shrink-0 text-right font-mono text-xs tabular-nums">{formatBytes(-r.allocatedSize, true)}</span>
+                      <span className="w-3.5" />
+                    </div>
+                  ))}
+                  {removedCount > removed.length && (
+                    <div className="px-4 py-2 text-xs text-muted-foreground">
+                      <span className="font-mono tabular-nums">{(removedCount - removed.length).toLocaleString()}</span> more removed items not listed
+                    </div>
+                  )}
                 </div>
                 </ContextMenuTrigger>
                 {nodeMenu}
@@ -614,7 +646,7 @@ function Inspector({ n, os, advice, adviceError, inSieve, onSieve, onTrash, onCo
     ["Size on Disk", `${n.allocatedSize.toLocaleString()} B`],
     ["Logical Size", `${n.logicalSize.toLocaleString()} B`],
     ["IEC Size", formatBytes(n.allocatedSize).replace(" GB", " GiB").replace(" MB", " MiB").replace(" KB", " KiB").replace(" TB", " TiB")],
-    ...(n.deltaBytes !== null ? [["Growth (24h)", formatBytes(n.deltaBytes, true)] as [string, string]] : []),
+    ...(n.deltaBytes !== null ? [["Change since previous scan", formatBytes(n.deltaBytes, true)] as [string, string]] : []),
     ["File Count", n.fileCount.toLocaleString()],
     ["Last Modified", formatMtime(n.newestMtime)],
     ["Extension", n.isDir ? "— (folder)" : n.extension ? `.${n.extension}` : "—"],
@@ -667,4 +699,14 @@ function Inspector({ n, os, advice, adviceError, inSieve, onSieve, onTrash, onCo
       </div>
     </div>
   );
+}
+
+/** Text color of a signed change: growth green, shrink red. */
+function changeColor(bytes: number) {
+  return bytes > 0 ? "text-primary" : bytes < 0 ? "text-destructive" : "text-muted-foreground";
+}
+
+/** Date and time of the previous scan, e.g. "21 Nov 2026, 14:05". */
+function formatScanDate(unixSecs: number) {
+  return new Date(unixSecs * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }

@@ -6,7 +6,7 @@
 //! on 64-bit integers (values stay below 2^53).
 
 use disksieve_core::{
-    contains_junk, Advice, JunkKind, JunkProject, Node, NodeFlags, NodeId, OtherBucket,
+    contains_junk, Advice, Delta, JunkKind, JunkProject, Node, NodeFlags, NodeId, OtherBucket,
     SafetyLevel, ScanProgress, ScanTree, SearchResult, SieveReview, SieveStatus, SizeMetric,
     SpaceBalance, TrashError, TrashOutcome, Viewport, ROOT,
 };
@@ -250,7 +250,8 @@ pub struct TreemapNodeDto {
     pub logical_size: u64,
     #[ts(type = "number")]
     pub allocated_size: u64,
-    /// `null` while Delta Mode is not available.
+    /// Change in bytes on disk since the previous scan of this location; `null` when there
+    /// is none (and for "Other" outside Delta Mode).
     #[ts(type = "number | null")]
     pub delta_bytes: Option<i64>,
     pub is_dir: bool,
@@ -329,24 +330,82 @@ pub struct ViewportDto {
     pub metric: SizeMetricDto,
     #[ts(type = "number")]
     pub total_value: u64,
+    /// Change of the current directory since the previous scan; `null` when there is none.
+    #[ts(type = "number | null")]
+    pub delta_bytes: Option<i64>,
+    /// `true` when only changed children are listed, biggest growth first.
+    pub delta_mode: bool,
     pub nodes: Vec<TreemapNodeDto>,
+    /// Delta Mode: items of the previous scan that are gone from this directory, largest
+    /// first (at most [`MAX_REMOVED_ITEMS`]).
+    pub removed: Vec<RemovedItemDto>,
+    /// All removed items of this directory, including those not listed.
+    pub removed_count: u32,
+}
+
+/// Most removed items sent with one viewport.
+pub const MAX_REMOVED_ITEMS: usize = 200;
+
+/// A file or folder of the previous scan that is gone now (deleted, moved or trashed).
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct RemovedItemDto {
+    pub name: String,
+    pub path: String,
+    /// Size on disk in the previous scan.
+    #[ts(type = "number")]
+    pub allocated_size: u64,
+    pub is_dir: bool,
 }
 
 impl ViewportDto {
-    pub fn from_viewport(tree: &ScanTree, view: &Viewport) -> Self {
+    /// `delta` is the overlay of the current tree (when a previous scan exists); `delta_mode`
+    /// says whether `view` was built with it.
+    pub fn from_viewport(
+        tree: &ScanTree,
+        view: &Viewport,
+        delta: Option<&Delta>,
+        delta_mode: bool,
+    ) -> Self {
         let current_path = tree.display_path(view.current);
         let mut nodes: Vec<TreemapNodeDto> = view
             .items
             .iter()
             .filter_map(|item| {
                 let node = tree.get(item.id)?;
-                Some(TreemapNodeDto::from_node(tree, item.id, node, item.value))
+                let mut dto = TreemapNodeDto::from_node(tree, item.id, node, item.value);
+                dto.delta_bytes = delta.and_then(|d| d.bytes(item.id));
+                Some(dto)
             })
             .collect();
         if let Some(bucket) = &view.other {
-            nodes.push(TreemapNodeDto::other(&current_path, bucket));
+            let mut other = TreemapNodeDto::other(&current_path, bucket);
+            other.delta_bytes = delta_mode.then_some(bucket.delta_bytes);
+            nodes.push(other);
         }
+        let removed_here = match delta {
+            Some(d) if delta_mode => d.removed_in(view.current),
+            _ => &[],
+        };
+        let removed = removed_here
+            .iter()
+            .take(MAX_REMOVED_ITEMS)
+            .map(|r| RemovedItemDto {
+                path: std::path::Path::new(&current_path)
+                    .join(&r.name)
+                    .to_string_lossy()
+                    .into_owned(),
+                name: r.name.clone(),
+                allocated_size: r.allocated,
+                is_dir: r.is_dir,
+            })
+            .collect();
         Self {
+            delta_bytes: delta.and_then(|d| d.bytes(view.current)),
+            delta_mode,
+            removed,
+            removed_count: u32::try_from(removed_here.len()).unwrap_or(u32::MAX),
             generation: view.generation,
             current_id: view.current,
             breadcrumbs: view
@@ -835,9 +894,10 @@ mod tests {
         let opts = ViewportOptions {
             metric: SizeMetric::Logical,
             max_items: 2,
+            ..ViewportOptions::default()
         };
         let view = build_viewport(&tree, docs, &opts).unwrap();
-        let dto = ViewportDto::from_viewport(&tree, &view);
+        let dto = ViewportDto::from_viewport(&tree, &view, None, false);
 
         assert_eq!(dto.generation, 9);
         assert_eq!(dto.current_id, docs);
@@ -864,6 +924,63 @@ mod tests {
         assert!(json["nodes"][2]["id"].is_null(), "{json}");
         assert_eq!(json["metric"], "logical");
         assert!(json["nodes"][0].get("allocatedSize").is_some(), "{json}");
+        assert!(json["deltaBytes"].is_null(), "no previous scan: {json}");
+        assert_eq!(dto.removed_count, 0);
+    }
+
+    #[test]
+    fn delta_viewport_lists_changes_and_removed_items() {
+        use disksieve_core::Snapshot;
+        const MIB: u64 = 1024 * 1024;
+        let dir = EntryMeta {
+            flags: NodeFlags::DIR,
+            ..EntryMeta::default()
+        };
+        let file = |size: u64| EntryMeta {
+            logical_size: size,
+            allocated_size: size,
+            mtime: 1_700_000_000,
+            flags: NodeFlags::empty(),
+        };
+        let build = |files: &[(&str, u64)]| {
+            let mut b = TreeBuilder::new("/scan", 1, dir);
+            let docs = b.push(ROOT, OsStr::new("docs"), dir).unwrap();
+            for &(name, size) in files {
+                b.push(docs, OsStr::new(name), file(size)).unwrap();
+            }
+            (b.finish(Duration::ZERO), docs)
+        };
+        let (before, _) = build(&[("old.bin", 2 * MIB), ("grow.bin", 2 * MIB)]);
+        let (after, docs) = build(&[("grow.bin", 5 * MIB), ("new.bin", 4 * MIB)]);
+        let delta = Delta::compute(&after, &Snapshot::capture(&before));
+
+        let opts = ViewportOptions {
+            delta: Some(delta.as_slice()),
+            ..ViewportOptions::default()
+        };
+        let view = build_viewport(&after, docs, &opts).unwrap();
+        let dto = ViewportDto::from_viewport(&after, &view, Some(&delta), true);
+
+        assert!(dto.delta_mode);
+        assert_eq!(dto.delta_bytes, Some(5 * MIB as i64));
+        let rows: Vec<_> = dto
+            .nodes
+            .iter()
+            .map(|n| (n.name.as_str(), n.delta_bytes))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("new.bin", Some(4 * MIB as i64)),
+                ("grow.bin", Some(3 * MIB as i64))
+            ]
+        );
+        assert_eq!(dto.removed_count, 1);
+        let removed = &dto.removed[0];
+        assert_eq!(removed.name, "old.bin");
+        assert_eq!(removed.allocated_size, 2 * MIB);
+        assert!(!removed.is_dir);
+        assert!(removed.path.ends_with("old.bin"), "{}", removed.path);
     }
 
     #[test]
@@ -1085,13 +1202,13 @@ mod tests {
 
         let code = tree.child_by_name(ROOT, "code").unwrap();
         let view = build_viewport(&tree, code, &ViewportOptions::default()).unwrap();
-        let tiles = ViewportDto::from_viewport(&tree, &view).nodes;
+        let tiles = ViewportDto::from_viewport(&tree, &view, None, false).nodes;
         assert!(tiles
             .iter()
             .all(|t| t.flags.contains(&"containsJunk".to_owned())));
         let web = tree.child_by_name(code, "web").unwrap();
         let view = build_viewport(&tree, web, &ViewportOptions::default()).unwrap();
-        let nm = ViewportDto::from_viewport(&tree, &view)
+        let nm = ViewportDto::from_viewport(&tree, &view, None, false)
             .nodes
             .into_iter()
             .find(|t| t.name == "node_modules")

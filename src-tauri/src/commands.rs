@@ -21,7 +21,7 @@ use crate::dto::{
     AdviceDto, AppInfoDto, DevJunkDto, DriveDto, ScanProgressDto, ScanSummaryDto, SearchResultDto,
     SieveDto, SizeMetricDto, TrashReportDto, ViewportDto,
 };
-use crate::state::AppState;
+use crate::state::{AppState, Baseline};
 
 /// Returns static information about the running application.
 #[tauri::command]
@@ -96,18 +96,19 @@ pub async fn start_scan(
                 let scanned = tree.get(ROOT).map_or(0, |n| n.allocated_size);
                 let mut summary = ScanSummaryDto::from_tree(&tree, volume_balance(&root, scanned));
                 let (previous, warning) = rotate_snapshot(&app, &tree);
-                summary.previous_snapshot_at = previous;
+                summary.previous_snapshot_at = previous.as_ref().map(Snapshot::taken_at);
                 summary.snapshot_warning = warning;
+                let baseline = previous.map(|snapshot| Baseline::new(&tree, snapshot));
                 Ok(state
-                    .finish_scan(handle.generation, Some(tree))
+                    .finish_scan(handle.generation, Some(tree), baseline)
                     .then_some(summary))
             }
             Err(CoreError::Cancelled) => {
-                state.finish_scan(handle.generation, None);
+                state.finish_scan(handle.generation, None, None);
                 Ok(None)
             }
             Err(e) => {
-                state.finish_scan(handle.generation, None);
+                state.finish_scan(handle.generation, None, None);
                 Err(e.to_string())
             }
         }
@@ -119,10 +120,10 @@ pub async fn start_scan(
 /// Folder (inside the app data directory) with the latest snapshot of every scanned root.
 const SNAPSHOT_DIR: &str = "snapshots";
 
-/// Reads the previous snapshot of the scanned root (its time is returned for Delta Mode),
-/// then replaces it with a snapshot of `tree`. Snapshot problems never fail the scan; they
-/// come back as a warning for the UI.
-fn rotate_snapshot(app: &AppHandle, tree: &ScanTree) -> (Option<u32>, Option<String>) {
+/// Reads the previous snapshot of the scanned root (the Delta Mode baseline), then replaces
+/// it with a snapshot of `tree`. Snapshot problems never fail the scan; they come back as a
+/// warning for the UI.
+fn rotate_snapshot(app: &AppHandle, tree: &ScanTree) -> (Option<Snapshot>, Option<String>) {
     let dir = match app.path().app_data_dir() {
         Ok(dir) => dir.join(SNAPSHOT_DIR),
         Err(e) => return (None, Some(format!("Scan snapshots are unavailable: {e}."))),
@@ -137,7 +138,7 @@ fn rotate_snapshot(app: &AppHandle, tree: &ScanTree) -> (Option<u32>, Option<Str
         warnings.push(format!("The scan snapshot could not be saved: {e}."));
     }
     let warning = (!warnings.is_empty()).then(|| warnings.join(" "));
-    (previous.map(|s| s.taken_at()), warning)
+    (previous, warning)
 }
 
 /// Cancels the scan in progress. Returns `false` when no scan was running.
@@ -149,23 +150,35 @@ pub fn cancel_scan(state: State<'_, AppState>) -> bool {
 /// Projection of directory `node_id` (the scan root when `None`) from scan `generation`:
 /// up to 200 largest children plus one "Other" node. Fails for a stale generation, so node
 /// ids from an older scan can never address nodes of a newer tree.
+///
+/// Every node carries its change since the previous scan of the same root (when there is
+/// one). With `delta`, only changed children are listed — the biggest changes, sorted by
+/// growth — together with the items removed from this folder.
 #[tauri::command]
 pub async fn get_viewport(
     state: State<'_, AppState>,
     generation: u64,
     node_id: Option<u32>,
     metric: SizeMetricDto,
+    delta: Option<bool>,
 ) -> Result<ViewportDto, String> {
     // `async` keeps the projection (up to ~200 ms for a directory with 1M entries) off the
     // main thread.
     let guard = state.tree();
     let tree = current(guard.as_ref(), generation)?;
+    let baseline = state.baseline();
+    let overlay = baseline.as_ref().map(|b| &b.delta);
+    let delta_mode = delta.unwrap_or(false);
+    if delta_mode && overlay.is_none() {
+        return Err("there is no previous scan of this location to compare with".into());
+    }
     let opts = ViewportOptions {
         metric: metric.into(),
+        delta: overlay.filter(|_| delta_mode).map(|d| d.as_slice()),
         ..ViewportOptions::default()
     };
     let view = build_viewport(tree, node_id.unwrap_or(ROOT), &opts).map_err(|e| e.to_string())?;
-    Ok(ViewportDto::from_viewport(tree, &view))
+    Ok(ViewportDto::from_viewport(tree, &view, overlay, delta_mode))
 }
 
 /// `Ctrl+K`: the largest files and folders of scan `generation` whose name contains every
@@ -260,6 +273,9 @@ pub async fn trash_nodes(
         let outcomes = disksieve_core::trash_nodes(tree, &node_ids, &guard, move_to_system_trash);
         // Folders above a removed artifact may no longer contain any.
         detect_junk(tree);
+        if let Some(baseline) = state.baseline_mut().as_mut() {
+            baseline.refresh(tree);
+        }
         Ok(TrashReportDto::new(
             generation,
             &outcomes,
@@ -283,6 +299,9 @@ pub async fn restore_nodes(
         let tree = current_mut(slot.as_mut(), generation)?;
         let outcomes = disksieve_core::restore_nodes(tree, &node_ids, restore_from_system_trash);
         detect_junk(tree);
+        if let Some(baseline) = state.baseline_mut().as_mut() {
+            baseline.refresh(tree);
+        }
         Ok(TrashReportDto::new(
             generation,
             &outcomes,

@@ -11,9 +11,8 @@ use crate::tree::{Node, NodeId, ScanTree};
 /// Default number of individual items in a viewport (the rest goes to "Other").
 pub const DEFAULT_MAX_ITEMS: usize = 200;
 
-/// Size used for ordering and for the treemap area.
-///
-/// `Delta` (growth since the previous snapshot) arrives with snapshots in v0.2.0.
+/// Size used for ordering and for the treemap area. Delta Mode is a separate option
+/// ([`ViewportOptions::delta`]), because a change can be negative.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SizeMetric {
     /// Space used on disk (cluster rounding, compression, sparse files).
@@ -45,17 +44,23 @@ impl SizeMetric {
 
 /// Options for [`build_viewport`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ViewportOptions {
+pub struct ViewportOptions<'a> {
     pub metric: SizeMetric,
     /// Maximum number of individual items; everything beyond is merged into "Other".
     pub max_items: usize,
+    /// Delta Mode: change of every node (indexed by `NodeId`, see
+    /// [`Delta::as_slice`](crate::snapshot::Delta::as_slice)). Only changed children are
+    /// shown: the largest changes (either sign) are kept, ordered from the biggest growth
+    /// to the biggest shrink.
+    pub delta: Option<&'a [i64]>,
 }
 
-impl Default for ViewportOptions {
+impl Default for ViewportOptions<'_> {
     fn default() -> Self {
         Self {
             metric: SizeMetric::default(),
             max_items: DEFAULT_MAX_ITEMS,
+            delta: None,
         }
     }
 }
@@ -78,6 +83,8 @@ pub struct OtherBucket {
     pub allocated_size: u64,
     pub file_count: u32,
     pub newest_mtime: u32,
+    /// Sum of the merged children's changes (Delta Mode only, else 0).
+    pub delta_bytes: i64,
 }
 
 /// Projection of one directory, ready to be mapped to the IPC DTO.
@@ -99,7 +106,8 @@ pub struct Viewport {
 }
 
 /// Builds the view of directory `id`: up to `opts.max_items` largest children (by
-/// `opts.metric`, descending) and one "Other" bucket with the rest.
+/// `opts.metric`, descending) and one "Other" bucket with the rest. In Delta Mode only
+/// changed children count, ranked by the size of their change.
 ///
 /// Trashed children are skipped. Runs in O(children + k log k) without allocating per node
 /// beyond one scratch vector.
@@ -129,34 +137,59 @@ pub fn build_viewport(tree: &ScanTree, id: NodeId, opts: &ViewportOptions) -> Co
     }
 
     let metric = opts.metric;
+    let delta_of = |child: NodeId| {
+        opts.delta
+            .map(|d| d.get(child as usize).copied().unwrap_or(0))
+    };
     let mut children: Vec<Candidate> = tree
         .children(id)
         .filter_map(|child| {
             let node = tree.get(child)?;
-            (!node.is_trashed()).then(|| Candidate {
+            let delta = delta_of(child);
+            (!node.is_trashed() && delta != Some(0)).then(|| Candidate {
                 value: metric.value(node),
                 secondary: metric.secondary(node),
+                delta: delta.unwrap_or(0),
                 id: child,
             })
         })
         .collect();
 
-    // Largest first; ties broken by the other metric, then by name, then by id, so the
-    // order is total and stable across calls.
-    let order = |a: &Candidate, b: &Candidate| -> Ordering {
+    // Ties broken by name, then by id, so the order is total and stable across calls.
+    let names = |a: &Candidate, b: &Candidate| -> Ordering {
+        tree.name(a.id).cmp(tree.name(b.id)).then(a.id.cmp(&b.id))
+    };
+    // Largest first (the other metric breaks ties).
+    let by_size = |a: &Candidate, b: &Candidate| -> Ordering {
         b.value
             .cmp(&a.value)
             .then(b.secondary.cmp(&a.secondary))
-            .then_with(|| tree.name(a.id).cmp(tree.name(b.id)))
-            .then(a.id.cmp(&b.id))
+            .then_with(|| names(a, b))
+    };
+    // Delta Mode: which changes are kept (biggest either way) and how they are shown
+    // (biggest growth first, biggest shrink last).
+    let by_change = |a: &Candidate, b: &Candidate| -> Ordering {
+        b.delta
+            .unsigned_abs()
+            .cmp(&a.delta.unsigned_abs())
+            .then_with(|| by_size(a, b))
+    };
+    let by_growth = |a: &Candidate, b: &Candidate| -> Ordering {
+        b.delta.cmp(&a.delta).then_with(|| by_size(a, b))
+    };
+    type Order<'f> = &'f dyn Fn(&Candidate, &Candidate) -> Ordering;
+    let (select, show): (Order, Order) = if opts.delta.is_some() {
+        (&by_change, &by_growth)
+    } else {
+        (&by_size, &by_size)
     };
 
     let keep = opts.max_items.min(children.len());
     if keep > 0 && keep < children.len() {
-        children.select_nth_unstable_by(keep - 1, order);
+        children.select_nth_unstable_by(keep - 1, select);
     }
     let (top, rest) = children.split_at_mut(keep);
-    top.sort_unstable_by(order);
+    top.sort_unstable_by(show);
 
     let items: Vec<ViewportItem> = top
         .iter()
@@ -176,6 +209,7 @@ pub fn build_viewport(tree: &ScanTree, id: NodeId, opts: &ViewportOptions) -> Co
             acc.allocated_size = acc.allocated_size.saturating_add(allocated);
             acc.file_count = acc.file_count.saturating_add(files);
             acc.newest_mtime = acc.newest_mtime.max(node.newest_mtime);
+            acc.delta_bytes = acc.delta_bytes.saturating_add(c.delta);
             acc
         })
     });
@@ -200,6 +234,8 @@ pub fn build_viewport(tree: &ScanTree, id: NodeId, opts: &ViewportOptions) -> Co
 struct Candidate {
     value: u64,
     secondary: u64,
+    /// Change in Delta Mode, else 0.
+    delta: i64,
     id: NodeId,
 }
 
@@ -459,5 +495,41 @@ mod tests {
         assert!(matches!(err, CoreError::NodeNotAllowed { .. }), "{err}");
         let err = build_viewport(&s.tree, 9_999, &ViewportOptions::default()).unwrap_err();
         assert!(matches!(err, CoreError::InvalidNode(9_999)), "{err}");
+    }
+
+    #[test]
+    fn delta_mode_keeps_the_biggest_changes_sorted_by_growth() {
+        let dir = EntryMeta {
+            flags: NodeFlags::DIR,
+            ..EntryMeta::default()
+        };
+        let mut b = TreeBuilder::new(PathBuf::from("/d"), 1, dir);
+        let ids: Vec<NodeId> = ["a", "b", "c", "d", "e"]
+            .iter()
+            .map(|n| b.push(ROOT, OsStr::new(n), file(10, 10)).unwrap())
+            .collect();
+        let tree = b.finish(Duration::ZERO);
+        // a +5, b −50, c 0 (unchanged, hidden), d +30, e −1.
+        let mut delta = vec![0i64; tree.len()];
+        for (&id, change) in ids.iter().zip([5, -50, 0, 30, -1]) {
+            delta[id as usize] = change;
+        }
+        let opts = ViewportOptions {
+            max_items: 3,
+            delta: Some(&delta),
+            ..ViewportOptions::default()
+        };
+        let view = build_viewport(&tree, ROOT, &opts).unwrap();
+        let shown: Vec<NodeId> = view.items.iter().map(|i| i.id).collect();
+        // The three biggest changes either way, biggest growth first.
+        assert_eq!(shown, [ids[3], ids[0], ids[1]]);
+        let other = view.other.unwrap();
+        assert_eq!((other.count, other.delta_bytes), (1, -1));
+        // Values stay sizes; the change is read from the overlay.
+        assert_eq!(view.items[0].value, 10);
+
+        let normal = build_viewport(&tree, ROOT, &ViewportOptions::default()).unwrap();
+        assert_eq!(normal.items.len(), 5);
+        assert_eq!(normal.other, None);
     }
 }

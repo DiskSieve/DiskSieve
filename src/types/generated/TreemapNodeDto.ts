@@ -17,7 +17,8 @@ path: string,
  */
 value: number, logicalSize: number, allocatedSize: number, 
 /**
- * `null` while Delta Mode is not available.
+ * Change in bytes on disk since the previous scan of this location; `null` when there
+ * is none (and for "Other" outside Delta Mode).
  */
 deltaBytes: number | null, isDir: boolean, fileCount: number, 
 /**
