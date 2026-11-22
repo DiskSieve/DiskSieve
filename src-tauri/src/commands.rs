@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use disksieve_core::{
-    build_viewport, detect_junk, is_volume_root, junk_projects, load_previous,
+    build_viewport, detect_junk, is_volume_root, junk_projects, list_changes, load_previous,
     move_to_system_trash, restore_from_system_trash, review_sieve as review_basket, snapshot_path,
     Advisor, CoreError, Guard, Platform, ScanOptions, ScanTree, Snapshot, SpaceBalance,
-    ViewportOptions, DEFAULT_SEARCH_LIMIT, RESTORE_SUPPORTED, ROOT,
+    ViewportOptions, DEFAULT_CHANGES_LIMIT, DEFAULT_SEARCH_LIMIT, RESTORE_SUPPORTED, ROOT,
 };
 use sysinfo::{DiskKind, Disks};
 use tauri::ipc::Channel;
@@ -18,8 +18,8 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::dto::{
-    AdviceDto, AppInfoDto, DevJunkDto, DriveDto, ScanProgressDto, ScanSummaryDto, SearchResultDto,
-    SieveDto, SizeMetricDto, TrashReportDto, ViewportDto,
+    AdviceDto, AppInfoDto, ChangeKindDto, ChangesDto, DevJunkDto, DriveDto, ScanProgressDto,
+    ScanSummaryDto, SearchResultDto, SieveDto, SizeMetricDto, TrashReportDto, ViewportDto,
 };
 use crate::state::{AppState, Baseline};
 
@@ -201,6 +201,38 @@ pub async fn search_nodes(
 
 /// Upper bound for `search_nodes`' `limit`, so one IPC answer stays small.
 const MAX_SEARCH_LIMIT: usize = 200;
+
+/// Changes view: everything that changed in scan `generation` since the previous scan of the
+/// same location, like `git diff --stat` — the largest `limit` changes of `kind` (all kinds
+/// when `None`) plus totals of every kind. Fails when there is no previous scan.
+#[tauri::command]
+pub async fn get_changes(
+    app: AppHandle,
+    generation: u64,
+    kind: Option<ChangeKindDto>,
+    limit: Option<u32>,
+) -> Result<ChangesDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let slot = state.tree();
+        let tree = current(slot.as_ref(), generation)?;
+        let baseline = state.baseline();
+        let delta = &baseline
+            .as_ref()
+            .ok_or("there is no previous scan of this location to compare with")?
+            .delta;
+        let limit = limit.map_or(DEFAULT_CHANGES_LIMIT, |l| {
+            (l as usize).min(MAX_CHANGES_LIMIT)
+        });
+        let list = list_changes(tree, delta, kind.map(Into::into), limit);
+        Ok(ChangesDto::new(tree, delta, kind, &list))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Upper bound for `get_changes`' `limit`, so one IPC answer stays small.
+const MAX_CHANGES_LIMIT: usize = 2_000;
 
 /// Dev Junk of scan `generation`: projects with rebuildable artifacts, largest first.
 /// Artifacts are detected when the scan finishes and refreshed after trash / restore.

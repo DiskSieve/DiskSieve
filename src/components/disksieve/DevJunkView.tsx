@@ -191,7 +191,7 @@ export function DevJunkView({ data, error, scanned, revealLabel, onTrash, onSiev
   );
 }
 
-function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+export function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
   return (
     <button onClick={onClick} aria-pressed={active}
       className={cn("flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors", active ? "border-primary/60 bg-primary/15 text-primary" : "border-border text-muted-foreground hover:text-foreground")}>
@@ -200,7 +200,7 @@ function Chip({ active, onClick, children }: { active: boolean; onClick: () => v
   );
 }
 
-function IconButton({ label, danger, onClick, children }: { label: string; danger?: boolean; onClick: () => void; children: ReactNode }) {
+export function IconButton({ label, danger, onClick, children }: { label: string; danger?: boolean; onClick: () => void; children: ReactNode }) {
   return (
     <Tooltip><TooltipTrigger asChild>
       <Button size="icon" variant="ghost" aria-label={label} onClick={onClick}
@@ -209,7 +209,7 @@ function IconButton({ label, danger, onClick, children }: { label: string; dange
   );
 }
 
-function Empty({ icon, title, text, action }: { icon?: ReactNode; title: string; text?: string; action?: ReactNode }) {
+export function Empty({ icon, title, text, action }: { icon?: ReactNode; title: string; text?: string; action?: ReactNode }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
       {icon}
