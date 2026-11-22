@@ -3,7 +3,7 @@
 // Inside the desktop app every call goes to Rust. In a plain browser (`npm run dev`) there is
 // no Tauri runtime, so the same functions resolve with demo data — the UI code never branches.
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { AppInfoDto, DevJunkDto, DriveDto, JunkProjectDto, ScanProgressDto, ScanSummaryDto, SearchResultDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
+import type { AdviceDto, AppInfoDto, DevJunkDto, DriveDto, JunkProjectDto, ScanProgressDto, ScanSummaryDto, SearchResultDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
 import { DRIVE_CAPACITY, TOTAL_FILES, findPath, flatten, initialDrive, type FsNode, type JunkTag } from "@/data/mockDrive";
 import { CONTAINS_JUNK_FLAG } from "@/lib/treemap-palette";
 import { version as appVersion } from "../../package.json";
@@ -32,6 +32,7 @@ interface Commands {
   cancel_scan: { args: NoArgs; result: boolean };
   get_viewport: { args: { generation: number; nodeId: number | null; metric: SizeMetricDto }; result: ViewportDto };
   get_dev_junk: { args: { generation: number }; result: DevJunkDto };
+  get_advice: { args: { generation: number; nodeId: number }; result: AdviceDto };
   search_nodes: { args: { generation: number; query: string; metric: SizeMetricDto; limit: number | null }; result: SearchResultDto };
   trash_nodes: { args: { generation: number; nodeIds: number[] }; result: TrashReportDto };
   restore_nodes: { args: { generation: number; nodeIds: number[] }; result: TrashReportDto };
@@ -108,6 +109,47 @@ function mockOther(nodes: TreemapNodeDto[], path: string, count: number): Treema
     value: sum((n) => n.value), logicalSize: sum((n) => n.logicalSize), allocatedSize: sum((n) => n.allocatedSize),
     deltaBytes: sum((n) => n.deltaBytes ?? 0), isDir: false, fileCount: sum((n) => n.fileCount),
     newestMtime: Math.max(0, ...nodes.map((n) => n.newestMtime)), extension: null, junkKind: null, flags: [], otherCount: count,
+  };
+}
+
+/** Demo copies of a few Rust Safety Advisor rules, so the Inspector shows real-looking verdicts. */
+const MOCK_RULES: Record<string, Omit<AdviceDto, "generation" | "nodeId">> = {
+  "hiberfil.sys": {
+    level: "system", ruleId: "hiberfil", title: "Hibernation file",
+    description: "Windows saves the memory contents here for hibernation and Fast Startup. Deleted by hand, it comes back at the next restart.",
+    alternative: { how: "Turn hibernation off (this also disables Fast Startup) in a terminal run as administrator.", command: "powercfg /hibernate off" },
+    protectedReason: "System file — managed by the operating system.",
+  },
+  "pagefile.sys": {
+    level: "system", ruleId: "pagefile", title: "Page file",
+    description: "Windows virtual memory, in use all the time. Its size is managed by Windows.",
+    alternative: { how: "Resize or move it in System Properties: Advanced → Performance → Settings → Advanced → Virtual memory.", command: "SystemPropertiesPerformance.exe" },
+    protectedReason: "System file — managed by the operating system.",
+  },
+  shadercache: {
+    level: "safe", ruleId: "steam_shader_cache", title: "Steam shader cache",
+    description: "Precompiled shaders. Games and the graphics driver rebuild them on the next launch; the first start of each game may stutter for a moment.",
+    alternative: null, protectedReason: null,
+  },
+};
+
+/** Demo verdict: a mirrored rule, else derived from the demo hint text. */
+function mockAdvice(generation: number, nodeId: number): AdviceDto {
+  const n = flatten(mockTree).find((x) => mockNodeId(x) === nodeId);
+  if (!n) throw new Error(`node ${nodeId} does not exist in the scan tree`);
+  const rule = MOCK_RULES[n.name.toLowerCase()];
+  if (rule) return { generation, nodeId, ...rule };
+  const hint = n.safetyHint;
+  const system = hint.startsWith("SYSTEM:");
+  const safe = hint.startsWith("Safe");
+  return {
+    generation, nodeId,
+    level: system ? "system" : safe ? "safe" : "review",
+    ruleId: mockKind(n) ? "dev_junk" : null,
+    title: system ? "Protected by DiskSieve" : mockKind(n) ? "Rebuildable build artifact" : safe ? "Recreated automatically" : "No rule for this item",
+    description: hint.replace(/^(SYSTEM:|Safe to delete —)\s*/, "").replace(/^./, (c) => c.toUpperCase()),
+    alternative: null,
+    protectedReason: system ? "System location — removing it could break the operating system or installed apps." : null,
   };
 }
 
@@ -304,6 +346,10 @@ export const getViewport = (generation: number, nodeId: number | null, metric: S
 /** Dev Junk of scan `generation`: projects with rebuildable artifacts, largest first. */
 export const getDevJunk = (generation: number): Promise<DevJunkDto> =>
   isTauri() ? call("get_dev_junk", { generation }) : Promise.resolve(mockDevJunk(generation));
+
+/** Safety Advisor verdict ("Can I delete this?") for one node; `system` = the backend refuses to delete it. */
+export const getAdvice = (generation: number, nodeId: number): Promise<AdviceDto> =>
+  isTauri() ? call("get_advice", { generation, nodeId }) : Promise.resolve(mockAdvice(generation, nodeId));
 
 /**
  * `Ctrl+K`: the largest nodes of scan `generation` whose name contains every word of `query`

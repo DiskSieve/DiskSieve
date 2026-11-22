@@ -11,6 +11,7 @@ pub mod balance;
 pub mod dev_junk;
 pub mod error;
 pub mod safety;
+pub mod safety_advisor;
 pub mod scanner;
 pub mod search;
 pub mod tree;
@@ -25,6 +26,9 @@ pub use error::{CoreError, CoreResult};
 pub use safety::{
     move_to_system_trash, restore_from_system_trash, restore_nodes, trash_nodes, verify_unchanged,
     Freed, Guard, Refusal, TrashError, TrashOutcome, RESTORE_SUPPORTED,
+};
+pub use safety_advisor::{
+    Advice, Advisor, Alternative, Platform, Rule, SafetyLevel, DEV_JUNK_RULE, RULES,
 };
 pub use scanner::{scan, CancelToken, ScanOptions, ScanProgress};
 pub use search::{search_nodes, SearchResult, DEFAULT_SEARCH_LIMIT};

@@ -6,8 +6,9 @@
 //! on 64-bit integers (values stay below 2^53).
 
 use disksieve_core::{
-    contains_junk, JunkKind, JunkProject, Node, NodeFlags, NodeId, OtherBucket, ScanProgress,
-    ScanTree, SearchResult, SizeMetric, SpaceBalance, TrashError, TrashOutcome, Viewport, ROOT,
+    contains_junk, Advice, JunkKind, JunkProject, Node, NodeFlags, NodeId, OtherBucket,
+    SafetyLevel, ScanProgress, ScanTree, SearchResult, SizeMetric, SpaceBalance, TrashError,
+    TrashOutcome, Viewport, ROOT,
 };
 use std::time::Duration;
 
@@ -610,6 +611,86 @@ fn artifact(tree: &ScanTree, project: NodeId, id: NodeId) -> Option<JunkArtifact
     })
 }
 
+/// Safety Advisor level: `system` exactly when the backend refuses to move the item to Trash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum SafetyLevelDto {
+    Safe,
+    Review,
+    System,
+}
+
+impl From<SafetyLevel> for SafetyLevelDto {
+    fn from(level: SafetyLevel) -> Self {
+        match level {
+            SafetyLevel::Safe => Self::Safe,
+            SafetyLevel::Review => Self::Review,
+            SafetyLevel::System => Self::System,
+        }
+    }
+}
+
+/// A safer way to reclaim the space than deleting the item by hand.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AlternativeDto {
+    pub how: String,
+    /// Command to run instead (may need an administrator terminal, as `how` says).
+    pub command: Option<String>,
+}
+
+/// "Can I delete this?" verdict of the Safety Advisor for one node.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AdviceDto {
+    #[ts(type = "number")]
+    pub generation: u64,
+    pub node_id: u32,
+    pub level: SafetyLevelDto,
+    /// Matched rule (e.g. `hiberfil`, `dev_junk`); `null` when no rule applies.
+    pub rule_id: Option<String>,
+    pub title: String,
+    /// May contain commands in `backticks`.
+    pub description: String,
+    pub alternative: Option<AlternativeDto>,
+    /// Why DiskSieve refuses to move it to Trash; set exactly when `level` is `system`.
+    pub protected_reason: Option<String>,
+}
+
+impl AdviceDto {
+    pub fn new(generation: u64, node_id: NodeId, advice: &Advice) -> Self {
+        Self {
+            generation,
+            node_id,
+            level: advice.level.into(),
+            rule_id: advice.rule.map(str::to_owned),
+            title: advice.title.to_owned(),
+            description: advice.description.to_owned(),
+            alternative: advice.alternative.map(|a| AlternativeDto {
+                how: a.how.to_owned(),
+                command: a.command.map(str::to_owned),
+            }),
+            protected_reason: advice.protected.map(|r| sentence(&r.to_string())),
+        }
+    }
+}
+
+/// Capitalizes the first letter and ends with a full stop.
+fn sentence(text: &str) -> String {
+    let mut chars = text.chars();
+    let mut out: String = chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default();
+    if !out.ends_with('.') {
+        out.push('.');
+    }
+    out
+}
+
 fn flag_names(flags: NodeFlags) -> Vec<String> {
     const NAMES: [(NodeFlags, &str); 6] = [
         (NodeFlags::HARDLINK, "hardlink"),
@@ -691,6 +772,46 @@ mod tests {
         assert!(json["nodes"][2]["id"].is_null(), "{json}");
         assert_eq!(json["metric"], "logical");
         assert!(json["nodes"][0].get("allocatedSize").is_some(), "{json}");
+    }
+
+    #[test]
+    fn advice_maps_level_texts_and_refusal() {
+        use disksieve_core::{Advice, Alternative, Refusal, SafetyLevel};
+        let advice = Advice {
+            level: SafetyLevel::System,
+            rule: Some("hiberfil"),
+            title: "Hibernation file",
+            description: "d",
+            alternative: Some(Alternative {
+                how: "h",
+                command: Some("powercfg /hibernate off"),
+            }),
+            protected: Some(Refusal::SystemFile),
+        };
+        let dto = AdviceDto::new(3, 7, &advice);
+        let json = serde_json::to_value(&dto).unwrap();
+        assert_eq!(json["level"], "system");
+        assert_eq!(json["ruleId"], "hiberfil");
+        assert_eq!(json["nodeId"], 7);
+        assert_eq!(json["alternative"]["command"], "powercfg /hibernate off");
+        assert_eq!(
+            json["protectedReason"],
+            "System file — managed by the operating system."
+        );
+        let none = AdviceDto::new(
+            3,
+            7,
+            &Advice {
+                level: SafetyLevel::Review,
+                rule: None,
+                alternative: None,
+                protected: None,
+                ..advice
+            },
+        );
+        let json = serde_json::to_value(&none).unwrap();
+        assert!(json["ruleId"].is_null() && json["alternative"].is_null());
+        assert!(json["protectedReason"].is_null());
     }
 
     #[test]

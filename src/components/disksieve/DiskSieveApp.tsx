@@ -1,9 +1,8 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { ArrowUp, ChevronRight, Copy, File, Folder, FolderOpen, HardDrive, Layers, ShieldAlert, ShieldCheck, RefreshCw, Trash2, Eye, ExternalLink } from "lucide-react";
+import { ArrowUp, ChevronRight, Copy, File, Folder, FolderOpen, HardDrive, Layers, Lightbulb, ShieldAlert, ShieldCheck, RefreshCw, Trash2, Eye, ExternalLink } from "lucide-react";
 import { flatten, hintFor, initialDrive, removeNode, type FsNode } from "@/data/mockDrive";
 import { copyText } from "@/lib/clipboard";
-import { junkHint } from "@/lib/junk";
 import type { TrashTarget } from "@/lib/trash";
 import { formatBytes, formatMtime } from "@/lib/format";
 import { legendFor, type ColorMode } from "@/lib/treemap-palette";
@@ -27,8 +26,8 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
-import { appInfo, cancelScan, getDevJunk, getViewport, isTauri, listDrives, mockNodeId, openTrash, pickFolder, restoreNodes, revealInExplorer, setMockTree, startScan, trashNodes } from "@/lib/ipc";
-import type { AppInfoDto, DevJunkDto, DriveDto, ScanProgressDto, ScanSummaryDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
+import { appInfo, cancelScan, getAdvice, getDevJunk, getViewport, isTauri, listDrives, mockNodeId, openTrash, pickFolder, restoreNodes, revealInExplorer, setMockTree, startScan, trashNodes } from "@/lib/ipc";
+import type { AdviceDto, AppInfoDto, DevJunkDto, DriveDto, ScanProgressDto, ScanSummaryDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
 
 type Tab = "explorer" | "junk" | "dups";
 const MODES: { key: ColorMode; label: string }[] = [{ key: "extension", label: "By Extension" }, { key: "age", label: "Cold Data (Age)" }, { key: "junk", label: "Dev Junk" }];
@@ -49,10 +48,8 @@ const PROTECTED_FLAGS: Record<string, string> = { cloudOnline: "Online-only clou
 const nodeLabel = (n: TreemapNodeDto) => (n.id === null ? otherLabel(n) : n.name);
 const revealLabel = (os: string) => (os === "macos" ? "Reveal in Finder" : os === "linux" ? "Show in File Manager" : "Show in File Explorer");
 const protectedReason = (n: TreemapNodeDto) => n.flags.map((f) => PROTECTED_FLAGS[f]).find(Boolean) ?? null;
-/** "Can I delete this?" text: Dev Junk recovery hint first, then the demo name-based hints. */
-const safetyHint = (n: TreemapNodeDto) => junkHint(n.junkKind) ?? hintFor(n.name);
-/** UI hint only — the backend guard decides; system items and protected flags start disabled. */
-const trashBlocked = (n: TreemapNodeDto) => !!protectedReason(n) || safetyHint(n).startsWith("SYSTEM");
+/** Context-menu hint only — the backend guard decides; the Inspector shows the real verdict. */
+const trashBlocked = (n: TreemapNodeDto) => !!protectedReason(n) || hintFor(n.name).startsWith("SYSTEM");
 const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 
 /** Applies a trash (`sign = -1`) or restore (`+1`) report to the scan totals. */
@@ -135,6 +132,21 @@ export function DiskSieveApp() {
       .catch((e: Error) => { if (live) setDevJunkError(e.message); });
     return () => { live = false; };
   }, [generation, tree, treeVersion]);
+
+  // Safety Advisor verdict of the inspected node, refreshed when trash / restore changes the tree.
+  const [advice, setAdvice] = useState<AdviceDto | null>(null);
+  const [adviceError, setAdviceError] = useState<string | null>(null);
+  const inspectedId = inspected?.id ?? null;
+  useEffect(() => {
+    setAdvice(null);
+    setAdviceError(null);
+    if (generation === null || inspectedId === null) return;
+    let live = true;
+    getAdvice(generation, inspectedId)
+      .then((a) => { if (live && a.generation === generation) setAdvice(a); })
+      .catch((e: unknown) => { if (live) setAdviceError(e instanceof Error ? e.message : String(e)); });
+    return () => { live = false; };
+  }, [generation, inspectedId, treeVersion]);
 
   const all = useMemo(() => flatten(tree), [tree]);
   const breadcrumbs = viewport?.breadcrumbs ?? [];
@@ -469,7 +481,7 @@ export function DiskSieveApp() {
         {/* Inspector */}
         <Sheet open={!!inspected} onOpenChange={(o) => !o && setInspected(null)}>
           <SheetContent className="w-full overflow-y-auto sm:w-[420px] sm:max-w-[420px]">
-            {inspected && <Inspector n={inspected} os={os} onTrash={() => setConfirmTrash([inspected])} onCopy={() => copyPath(inspected)} onReveal={() => reveal(inspected)} />}
+            {inspected && <Inspector n={inspected} os={os} advice={advice?.nodeId === inspected.id ? advice : null} adviceError={adviceError} onTrash={() => setConfirmTrash([inspected])} onCopy={() => copyPath(inspected)} onReveal={() => reveal(inspected)} />}
           </SheetContent>
         </Sheet>
 
@@ -530,11 +542,25 @@ function TrashConfirmDialog({ nodes, os, onCancel, onConfirm }: { nodes: TrashTa
   );
 }
 
-function Inspector({ n, os, onTrash, onCopy, onReveal }: { n: TreemapNodeDto; os: string; onTrash: () => void; onCopy: () => void; onReveal: () => void }) {
-  const hint = safetyHint(n);
-  const blocked = protectedReason(n);
-  const system = hint.startsWith("SYSTEM");
-  const safe = hint.startsWith("Safe");
+const LEVELS: Record<AdviceDto["level"], { badge: string; box: string; icon: string; pill: string }> = {
+  safe: { badge: "Safe to delete", box: "border-primary/40 bg-primary/10", icon: "text-primary", pill: "" },
+  review: { badge: "Review first", box: "border-warning/40 bg-warning/10", icon: "text-warning", pill: "bg-warning text-warning-foreground" },
+  system: { badge: "Protected", box: "border-destructive/40 bg-destructive/10", icon: "text-destructive", pill: "bg-destructive text-destructive-foreground" },
+};
+
+/** Text with `backtick` spans rendered as inline code. */
+function RichText({ text }: { text: string }) {
+  return <>{text.split("`").map((part, i) => (i % 2 ? <code key={i} className="rounded bg-muted px-1 font-mono text-[0.85em] text-foreground">{part}</code> : <Fragment key={i}>{part}</Fragment>))}</>;
+}
+
+function copyCommand(command: string) {
+  copyText(command).then(() => toast.success("Command copied", { description: command }))
+    .catch((e: Error) => toast.error("Could not copy the command", { description: e.message }));
+}
+
+function Inspector({ n, os, advice, adviceError, onTrash, onCopy, onReveal }: { n: TreemapNodeDto; os: string; advice: AdviceDto | null; adviceError: string | null; onTrash: () => void; onCopy: () => void; onReveal: () => void }) {
+  const blocked = advice?.protectedReason ?? protectedReason(n);
+  const ui = advice ? LEVELS[advice.level] : null;
   const rows: [string, string][] = [
     ["Path", n.path],
     ["Size on Disk", `${n.allocatedSize.toLocaleString()} B`],
@@ -555,13 +581,32 @@ function Inspector({ n, os, onTrash, onCopy, onReveal }: { n: TreemapNodeDto; os
       <dl className="grid grid-cols-[110px_1fr] gap-x-3 gap-y-2 rounded-lg border border-border bg-background p-4 text-xs">
         {rows.map(([k, v]) => (<Fragment key={k}><dt className="text-muted-foreground">{k}</dt><dd className="break-all font-mono tabular-nums">{v}</dd></Fragment>))}
       </dl>
-      <div className={cn("rounded-lg border p-4", safe ? "border-primary/40 bg-primary/10" : system ? "border-destructive/40 bg-destructive/10" : "border-warning/40 bg-warning/10")}>
+      <div className={cn("rounded-lg border p-4", ui?.box ?? "border-border bg-background")}>
         <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
-          {safe ? <ShieldCheck className="h-4 w-4 text-primary" /> : <ShieldAlert className={cn("h-4 w-4", system ? "text-destructive" : "text-warning")} />}
+          {advice?.level === "safe" ? <ShieldCheck className="h-4 w-4 text-primary" /> : <ShieldAlert className={cn("h-4 w-4", ui?.icon ?? "text-muted-foreground")} />}
           Can I delete this?
-          <Badge className={cn("ml-auto", safe ? "" : system ? "bg-destructive text-destructive-foreground" : "bg-warning text-warning-foreground")}>{safe ? "Safe to delete" : system ? "Do not delete" : "Review first"}</Badge>
+          {ui && <Badge className={cn("ml-auto", ui.pill)}>{ui.badge}</Badge>}
         </div>
-        <p className="text-sm text-muted-foreground">{hint.replace(/^SYSTEM: /, "")}</p>
+        {advice ? (
+          <>
+            <p className="text-sm font-medium">{advice.title}</p>
+            <p className="mt-1 text-sm text-muted-foreground"><RichText text={advice.description} /></p>
+            {advice.alternative && (
+              <div className="mt-3 rounded-md border border-border bg-background p-3">
+                <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold"><Lightbulb className="h-3.5 w-3.5 text-primary" />Safer way</div>
+                <p className="text-xs text-muted-foreground">{advice.alternative.how}</p>
+                {advice.alternative.command && (
+                  <div className="mt-2 flex items-center gap-1.5">
+                    <code className="min-w-0 flex-1 truncate rounded bg-muted px-2 py-1 font-mono text-[11px]" title={advice.alternative.command}>{advice.alternative.command}</code>
+                    <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" aria-label="Copy command" onClick={() => copyCommand(advice.alternative!.command!)}><Copy className="h-3.5 w-3.5" /></Button>
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        ) : (
+          <p className="text-sm text-muted-foreground">{adviceError ? `Could not check this item: ${adviceError}` : "Checking…"}</p>
+        )}
       </div>
       <div className="mt-auto space-y-2">
         {blocked && <p className="flex items-center gap-2 text-xs text-muted-foreground"><ShieldAlert className="h-3.5 w-3.5 shrink-0 text-warning" />{blocked}</p>}
@@ -569,7 +614,7 @@ function Inspector({ n, os, onTrash, onCopy, onReveal }: { n: TreemapNodeDto; os
           <Button variant="outline" className="flex-1" onClick={onReveal}><ExternalLink className="h-4 w-4" />{revealLabel(os)}</Button>
           <Button variant="outline" className="flex-1" onClick={onCopy}><Copy className="h-4 w-4" />Copy Path</Button>
         </div>
-        <Button variant="destructive" className="w-full" disabled={system || !!blocked} onClick={onTrash}><Trash2 className="h-4 w-4" />Move to Trash…</Button>
+        <Button variant="destructive" className="w-full" disabled={advice?.level === "system" || !!blocked} onClick={onTrash}><Trash2 className="h-4 w-4" />Move to Trash…</Button>
       </div>
     </div>
   );

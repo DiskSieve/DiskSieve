@@ -1,12 +1,15 @@
 // IPC type contract (Rust ↔ TypeScript).
 // DTO types are generated from Rust by ts-rs into ./generated — never edit them by hand.
 // Regenerate after changing `src-tauri/src/dto.rs`: `npm run gen:types`.
+export type { AdviceDto } from "./generated/AdviceDto";
+export type { AlternativeDto } from "./generated/AlternativeDto";
 export type { AppInfoDto } from "./generated/AppInfoDto";
 export type { BreadcrumbDto } from "./generated/BreadcrumbDto";
 export type { DevJunkDto } from "./generated/DevJunkDto";
 export type { JunkArtifactDto } from "./generated/JunkArtifactDto";
 export type { JunkProjectDto } from "./generated/JunkProjectDto";
 export type { DriveDto } from "./generated/DriveDto";
+export type { SafetyLevelDto } from "./generated/SafetyLevelDto";
 export type { ScanProgressDto } from "./generated/ScanProgressDto";
 export type { ScanSummaryDto } from "./generated/ScanSummaryDto";
 export type { SearchHitDto } from "./generated/SearchHitDto";
