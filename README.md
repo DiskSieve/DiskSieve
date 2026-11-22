@@ -78,7 +78,7 @@ Existing tools show *what* takes up space, then leave you alone with the harder 
 | ✅ | **File actions** | Right-click any tile or row: inspect, show in File Explorer / Finder, copy the full path, move to Trash. |
 | ✅ | **Dev Junk** | Build artifacts detected by project marker files (no false hits on any random `build/` folder or inside installed apps), grouped by project and its age, cleaned in bulk via the Trash. |
 | ✅ | **Search (`Ctrl+K`)** | Instant name search in the scanned tree — no disk access. The 50 largest matches, one keystroke to jump to the folder. |
-| 🗓️ | **Safety Advisor** | A verdict for every item (*safe* / *review* / *system*) with an explanation and a safe alternative (e.g. `powercfg -h off` instead of deleting `hiberfil.sys`). |
+| ✅ | **Safety Advisor** | A verdict for every item (*safe* / *review* / *protected*) with an explanation and a safer alternative (e.g. `powercfg /hibernate off` instead of deleting `hiberfil.sys`). ~100 rules for Windows, macOS and Linux — see [all rules](docs/safety-advisor.md). |
 | 🗓️ | **Sieve Basket** | Collect items from every view, see the total space reclaimed and safety warnings, then trash them in one go. |
 | 🗓️ | **Delta Mode** | Compare with previous scans: the treemap shows only what grew. |
 | 🗓️ | **Duplicates** | Size → partial hash → full BLAKE3, skipping hard links and cloud-only files. |
@@ -87,7 +87,7 @@ Existing tools show *what* takes up space, then leave you alone with the harder 
 
 ## Project status
 
-**`v0.1.0`** — the MVP — is complete. Next up: `v0.2.0` (Safety Advisor, Sieve Basket, Delta Mode, duplicates).
+**`v0.1.0`** — the MVP — is complete. `v0.2.0` is in progress: the Safety Advisor is done; next up are the Sieve Basket, Delta Mode and duplicates.
 
 | Phase | Scope | Status |
 | :--- | :--- | :---: |
@@ -301,6 +301,7 @@ Key design decisions:
 The project follows GitHub Flow: one roadmap step = one branch = one pull request, squash-merged into a protected `main`, with [Conventional Commits](https://www.conventionalcommits.org/) titles.
 Every pull request must pass `cargo fmt`, `clippy -D warnings`, `cargo test` and `npm run build` on Windows, Linux and macOS.
 For larger changes, please open an issue first.
+Safety Advisor rules live in `crates/disksieve-core/src/safety_advisor.rs`; after changing them, regenerate [docs/safety-advisor.md](docs/safety-advisor.md) with `DISKSIEVE_BLESS=1 cargo test -p disksieve-core docs_are_up_to_date`.
 
 ## License
 

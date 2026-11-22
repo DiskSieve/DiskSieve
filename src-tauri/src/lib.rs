@@ -20,6 +20,7 @@ pub fn run() {
             commands::cancel_scan,
             commands::get_viewport,
             commands::get_dev_junk,
+            commands::get_advice,
             commands::search_nodes,
             commands::trash_nodes,
             commands::restore_nodes,

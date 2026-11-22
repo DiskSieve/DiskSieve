@@ -154,6 +154,37 @@ impl JunkKind {
         tree.get(id).and_then(|n| Self::from_u8(n.junk & KIND_MASK))
     }
 
+    /// How the artifact comes back after it is deleted (shown by the Safety Advisor).
+    pub fn rebuild_hint(self) -> &'static str {
+        match self {
+            Self::NodeModules => "Dependencies of a JavaScript project. Reinstall them with `npm install`, `pnpm install` or `yarn`.",
+            Self::NextBuild => "Framework build output (.next, .nuxt, .svelte-kit). The next `dev` or `build` run recreates it.",
+            Self::JsBuild => "Build output of a JavaScript project. The project's build script recreates it.",
+            Self::JsToolCache => "Tool caches and coverage reports of a JavaScript project, recreated on the next run.",
+            Self::CargoTarget => "Rust build output. `cargo build` recreates it; the next build is a full one.",
+            Self::PythonVenv => "Python virtual environment. Recreate it with `python -m venv .venv` and reinstall the dependencies.",
+            Self::PythonCache => "Python bytecode and tool caches, recreated automatically.",
+            Self::PythonBuild => "Python build output. `pip install .`, `python -m build` or tox recreate it.",
+            Self::GradleBuild => "Gradle build output, recreated by the next build or sync.",
+            Self::MavenTarget => "Maven build output. `mvn package` recreates it.",
+            Self::DotnetBuild => ".NET build output (bin/obj). `dotnet build` recreates it.",
+            Self::PhpVendor => "PHP dependencies. `composer install` restores them.",
+            Self::RubyBundle => "Ruby gems installed for the project. `bundle install` restores them.",
+            Self::DartBuild => "Dart / Flutter build output. `flutter pub get` and `flutter build` recreate it.",
+            Self::SwiftBuild => "Swift build output or CocoaPods. `swift build` or `pod install` recreate it.",
+            Self::CmakeBuild => "CMake build folder. Re-run the CMake configure and build steps.",
+            Self::ElixirBuild => "Elixir build output and dependencies. `mix deps.get` and `mix compile` recreate them.",
+            Self::HaskellBuild => "Haskell build output. `stack build` or `cabal build` recreate it.",
+            Self::ScalaBuild => "Scala build output, recreated by the next sbt build or Metals import.",
+            Self::ClojureBuild => "Clojure build output, recreated by the next build or REPL start.",
+            Self::ZigBuild => "Zig build cache and output. `zig build` recreates them.",
+            Self::TerraformCache => "Terraform providers and modules. `terraform init` restores them.",
+            Self::UnityCache => "Unity project cache. Unity rebuilds it when the project is opened, which can take a while.",
+            Self::UnrealCache => "Unreal Engine cache. Unreal regenerates Intermediate and DerivedDataCache, but Saved also holds autosaves, logs and config — check it first.",
+            Self::GodotCache => "Godot import cache. Godot reimports the assets on the next open.",
+        }
+    }
+
     /// Kinds that need no marker next to them; they belong to the nearest project above.
     fn searches_project(self) -> bool {
         matches!(

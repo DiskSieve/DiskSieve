@@ -7,8 +7,8 @@ use std::time::Instant;
 
 use disksieve_core::{
     build_viewport, detect_junk, is_volume_root, junk_projects, move_to_system_trash,
-    restore_from_system_trash, CoreError, Guard, ScanOptions, ScanTree, SpaceBalance,
-    ViewportOptions, DEFAULT_SEARCH_LIMIT, RESTORE_SUPPORTED, ROOT,
+    restore_from_system_trash, Advisor, CoreError, Guard, Platform, ScanOptions, ScanTree,
+    SpaceBalance, ViewportOptions, DEFAULT_SEARCH_LIMIT, RESTORE_SUPPORTED, ROOT,
 };
 use sysinfo::{DiskKind, Disks};
 use tauri::ipc::Channel;
@@ -17,7 +17,7 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::dto::{
-    AppInfoDto, DevJunkDto, DriveDto, ScanProgressDto, ScanSummaryDto, SearchResultDto,
+    AdviceDto, AppInfoDto, DevJunkDto, DriveDto, ScanProgressDto, ScanSummaryDto, SearchResultDto,
     SizeMetricDto, TrashReportDto, ViewportDto,
 };
 use crate::state::AppState;
@@ -171,6 +171,26 @@ pub async fn get_dev_junk(
     let guard = state.tree();
     let tree = current(guard.as_ref(), generation)?;
     Ok(DevJunkDto::new(tree, &junk_projects(tree)))
+}
+
+/// Safety Advisor verdict ("Can I delete this?") for node `node_id` of scan `generation`.
+/// Uses the same guard as `trash_nodes`, so `system` means the backend refuses to delete it.
+/// Tree and path logic only — no disk access.
+#[tauri::command]
+pub async fn get_advice(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    generation: u64,
+    node_id: u32,
+) -> Result<AdviceDto, String> {
+    let guard = delete_guard(&app);
+    let advisor = Advisor::new(Platform::CURRENT, app.path().home_dir().ok().as_deref());
+    let slot = state.tree();
+    let tree = current(slot.as_ref(), generation)?;
+    let advice = advisor
+        .advise(tree, node_id, &guard)
+        .map_err(|e| e.to_string())?;
+    Ok(AdviceDto::new(generation, node_id, &advice))
 }
 
 /// Moves nodes of scan `generation` to the system Trash. Every node passes the backend guard
