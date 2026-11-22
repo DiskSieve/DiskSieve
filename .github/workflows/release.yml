@@ -130,6 +130,9 @@ jobs:
           args: --config src-tauri/tauri.updater.conf.json ${{ matrix.args }}
           # Windows updates run the NSIS installer (same as the main download), not the MSI.
           updaterJsonPreferNsis: true
+          # The three jobs upload to the same draft release; a clash (e.g. two jobs writing
+          # `latest.json` at once, as in v0.1.0) is retried instead of failing the build.
+          retryAttempts: 2
 
       # Portable Windows build: the bare executable, no installer, nothing written to the
       # registry. Needs the WebView2 runtime (preinstalled on Windows 10 21H2+ and 11).

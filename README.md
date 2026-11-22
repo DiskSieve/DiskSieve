@@ -21,7 +21,7 @@ It answers not only *“what is taking up space?”*, but also *“what can I sa
 </div>
 
 > [!WARNING]
-> DiskSieve is in early development: `v0.1.0` is the first public MVP. Installers are not code-signed yet, so your OS will warn on first launch (see [Installation](#installation)).
+> DiskSieve is in early development: `v0.2.0` is the latest release. Installers are not code-signed yet, so your OS will warn on first launch (see [Installation](#installation)).
 > Scanning is read-only. The only action that changes your disk is **Move to Trash**, which always asks first, is checked by the backend and can be undone on Windows and Linux.
 
 ---
@@ -88,7 +88,7 @@ Existing tools show *what* takes up space, then leave you alone with the harder 
 
 ## Project status
 
-**`v0.1.0`** — the MVP — is complete. All `v0.2.0` features are done: the Safety Advisor, the Sieve Basket, Delta Mode, the Changes view and duplicates. Next up is `v0.3.0` (NTFS MFT engine and full size accuracy).
+**`v0.2.0`** — decision context — is complete: on top of the `v0.1.0` MVP it adds the Safety Advisor, the Sieve Basket, Delta Mode, the Changes view and duplicates. Next up is `v0.3.0` (NTFS MFT engine and full size accuracy).
 
 | Phase | Scope | Status |
 | :--- | :--- | :---: |
@@ -96,6 +96,8 @@ Existing tools show *what* takes up space, then leave you alone with the harder 
 | **2. Core** | Compact arena tree, multi-threaded scanner, viewport projection (Top-200 + Other) | ✅ |
 | **3. MVP integration** | Live scan, treemap on real data, app shell, space reconciliation, safe file actions | ✅ |
 | **4. Dev Junk and release** | Dev Junk engine and tab, `Ctrl+K` search, signed auto-updater, `v0.1.0` release | ✅ |
+| **5. Safety Advisor and Sieve** | “Can I delete this?” rules, Sieve Basket with one-confirmation cleanup | ✅ |
+| **6. Snapshots, Delta and duplicates** | Scan snapshots, Delta Mode, Changes view, BLAKE3 duplicate finder, `v0.2.0` release | ✅ |
 
 <details>
 <summary><b>Completed steps</b></summary>
@@ -117,6 +119,13 @@ Existing tools show *what* takes up space, then leave you alone with the harder 
 - **4.3** `Ctrl+K` search — in-memory name search (every word, case-insensitive), 50 largest hits, jump to the result in the Explorer
 - **4.4** `v0.1.0` release — release workflow with installers for 3 OSes, portable `.exe` and `SHA256SUMS.txt`, installation guide
 - **4.5** Auto-updater — signed update packages and `latest.json` on GitHub Releases, startup check (can be turned off) and one-click update from the title bar
+- **5.1** Safety Advisor — deterministic rules for system files and caches, with safety level, explanation and the right way to free the space
+- **5.2** Sieve Basket — collect items from every view, verdicts and warnings, nested items counted once, one-confirmation Move to Trash
+- **6.1** Scan snapshots — directories and files ≥ 1 MiB, `postcard` + `zstd`, versioned format, saved after every scan
+- **6.2** Delta Mode — change since the previous scan on every node, removed items by name, snapshots of a parent folder reused
+- **6.3** Changes view — added, removed, grew, shrank and small-file changes that add up to the total, filters, jump to Explorer, add to Sieve
+- **6.4** Duplicate finder — size, first and last 16 KiB, full BLAKE3 in parallel, cancellable, keep one copy and sieve the rest
+- **6.5** `v0.2.0` release
 
 </details>
 

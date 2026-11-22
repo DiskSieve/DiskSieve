@@ -952,14 +952,14 @@ dependencies = [
 
 [[package]]
 name = "disksieve-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "disksieve-core",
 ]
 
 [[package]]
 name = "disksieve-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bitflags 2.13.2",
  "blake3",
@@ -977,7 +977,7 @@ dependencies = [
 
 [[package]]
 name = "disksieve-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "disksieve-core",
  "serde",

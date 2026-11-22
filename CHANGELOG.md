@@ -10,6 +10,21 @@ heading to `## [x.y.z] - YYYY-MM-DD` and start a new empty **Unreleased** sectio
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-22
+
+Know what is safe to delete, what changed since last time, and which files are copies.
+
+### Added
+- "Can I delete this?" — the Safety Advisor explains well-known system and cache items (hibernation file, page file, WinSxS, Windows.old, shader caches, browser and package manager caches and more): what they are, whether they are safe to remove and the right way to free the space.
+- Sieve Basket: collect items from the treemap, Dev Junk, Changes and Duplicates, review them with Safety Advisor verdicts and the total you will free, then move everything to Trash with one confirmation.
+- Scan snapshots: every scan saves a small snapshot, so the next scan of the same drive or folder can be compared with it. A folder scan can also compare with an earlier scan of the whole drive.
+- Delta Mode: switch the treemap and list to "what changed since the previous scan" — growth in green, removed items in red.
+- Changes tab: a `git diff`-style list of everything that appeared, grew, shrank or disappeared since the previous scan, with totals, filters, "Show in Explorer" and "Add to Sieve".
+- Duplicates tab: finds files with identical content (same size, then the first and last 16 KiB, then a full BLAKE3 hash) with progress and Cancel. Choose the copy to keep and send the rest to the Sieve. Cloud-only files are never opened and hard links are not counted as copies.
+
+### Fixed
+- The treemap could show the previous folder after switching tabs.
+
 ## [0.1.0] - 2026-11-15
 
 The first public release: a fast, accurate and safe disk space analyzer.
@@ -25,5 +40,6 @@ The first public release: a fast, accurate and safe disk space analyzer.
 - Automatic updates: DiskSieve looks for a new version on startup (can be turned off) and updates with one click. Updates are signature-checked before installing.
 - Installers for Windows, macOS (Apple Silicon and Intel) and Linux, a portable Windows `.exe`, and `SHA256SUMS.txt` for every release.
 
-[Unreleased]: https://github.com/DiskSieve/disksieve/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/DiskSieve/disksieve/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/DiskSieve/disksieve/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/DiskSieve/disksieve/releases/tag/v0.1.0
