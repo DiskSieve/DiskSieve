@@ -11,6 +11,7 @@ import { ScanProgressDialog, ScanTargetDialog, formatDuration, usedBytes } from 
 import { SpaceBalanceSheet, SpaceBalanceTile } from "./SpaceBalance";
 import { Treemap, otherLabel } from "./Treemap";
 import { DevJunkView } from "./DevJunkView";
+import { ChangesView } from "./ChangesView";
 import { SieveBasket } from "./SieveBasket";
 import { LEVELS } from "@/lib/advice";
 import { SearchPalette } from "./SearchPalette";
@@ -31,7 +32,7 @@ import { cn } from "@/lib/utils";
 import { appInfo, cancelScan, getAdvice, getDevJunk, getViewport, isTauri, listDrives, mockNodeId, openTrash, pickFolder, restoreNodes, revealInExplorer, reviewSieve, setMockTree, startScan, trashNodes } from "@/lib/ipc";
 import type { AdviceDto, AppInfoDto, DevJunkDto, DriveDto, ScanProgressDto, ScanSummaryDto, SieveDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
 
-type Tab = "explorer" | "junk" | "dups";
+type Tab = "explorer" | "changes" | "junk" | "dups";
 const MODES: { key: ColorMode; label: string }[] = [{ key: "extension", label: "By Extension" }, { key: "age", label: "Cold Data (Age)" }, { key: "junk", label: "Dev Junk" }];
 const METRICS: { key: SizeMetricDto; label: string; hint: string }[] = [
   { key: "allocated", label: "On disk", hint: "Space actually used on disk (clusters, compression, sparse files)" },
@@ -415,6 +416,7 @@ export function DiskSieveApp() {
           <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)} className="order-last w-full lg:order-none lg:mx-auto lg:w-auto">
             <TabsList className="h-9 w-full lg:w-auto">
               <TabsTrigger value="explorer" className="flex-1 text-xs">Explorer</TabsTrigger>
+              <TabsTrigger value="changes" className="flex-1 text-xs">Changes</TabsTrigger>
               <TabsTrigger value="junk" className="flex-1 gap-1.5 text-xs">Dev Junk <Badge className="h-4 px-1.5 font-mono text-[10px]">{devJunk ? formatBytes(devJunk.allocatedBytes) : "—"}</Badge></TabsTrigger>
               <TabsTrigger value="dups" className="flex-1 gap-1.5 text-xs">Duplicates <Badge variant="secondary" className="h-4 px-1.5 font-mono text-[10px]">{formatBytes(wastedBytes(dups))}</Badge></TabsTrigger>
             </TabsList>
@@ -558,6 +560,8 @@ export function DiskSieveApp() {
         )}
         {tab === "junk" && <DevJunkView data={devJunk} error={devJunkError} scanned={generation !== null} revealLabel={revealLabel(os)}
           onTrash={setConfirmTrash} onSieve={addToSieve} onReveal={(id, path) => reveal({ id, path })} onScan={() => setTargetOpen(true)} />}
+        {tab === "changes" && <ChangesView generation={generation} refreshKey={isTauri() ? treeVersion : tree} previousScanAt={previousScanAt}
+          onOpenFolder={(id) => { setTab("explorer"); setCurrentId(id); }} onSieve={addToSieve} onScan={() => setTargetOpen(true)} />}
         {tab === "dups" && <DuplicatesView groups={dups} setGroups={setDups} />}
 
         {/* Inspector */}
@@ -581,6 +585,7 @@ export function DiskSieveApp() {
             ...MODES.map((m) => ({ label: `Color by: ${m.label}`, run: () => { setMode(m.key); setTab("explorer"); setCmdOpen(false); } })),
             ...METRICS.map((m) => ({ label: `Size: ${m.label}`, run: () => { setMetric(m.key); setTab("explorer"); setCmdOpen(false); } })),
             ...(deltaAvailable ? [{ label: "Toggle Delta Mode", run: () => { setDelta((d) => !d); setCmdOpen(false); } }] : []),
+            { label: "Open Changes since the previous scan", run: () => { setTab("changes"); setCmdOpen(false); } },
             { label: "Open Dev Junk cleaner", run: () => { setTab("junk"); setCmdOpen(false); } },
             { label: "Open Sieve", run: () => { setSieveOpen(true); setCmdOpen(false); } },
             { label: "Open Duplicates finder", run: () => { setTab("dups"); setCmdOpen(false); } },

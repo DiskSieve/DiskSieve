@@ -3,7 +3,7 @@
 // Inside the desktop app every call goes to Rust. In a plain browser (`npm run dev`) there is
 // no Tauri runtime, so the same functions resolve with demo data — the UI code never branches.
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { AdviceDto, AppInfoDto, DevJunkDto, DriveDto, JunkProjectDto, ScanProgressDto, ScanSummaryDto, SearchResultDto, SieveDto, SieveItemDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
+import type { AdviceDto, AppInfoDto, ChangeDto, ChangeKindDto, ChangesDto, DevJunkDto, DriveDto, JunkProjectDto, ScanProgressDto, ScanSummaryDto, SearchResultDto, SieveDto, SieveItemDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
 import { DRIVE_CAPACITY, TOTAL_FILES, findPath, flatten, initialDrive, type FsNode, type JunkTag } from "@/data/mockDrive";
 import { CONTAINS_JUNK_FLAG } from "@/lib/treemap-palette";
 import { version as appVersion } from "../../package.json";
@@ -32,6 +32,7 @@ interface Commands {
   cancel_scan: { args: NoArgs; result: boolean };
   get_viewport: { args: { generation: number; nodeId: number | null; metric: SizeMetricDto; delta: boolean }; result: ViewportDto };
   get_dev_junk: { args: { generation: number }; result: DevJunkDto };
+  get_changes: { args: { generation: number; kind: ChangeKindDto | null; limit: number | null }; result: ChangesDto };
   get_advice: { args: { generation: number; nodeId: number }; result: AdviceDto };
   review_sieve: { args: { generation: number; nodeIds: number[] }; result: SieveDto };
   search_nodes: { args: { generation: number; query: string; metric: SizeMetricDto; limit: number | null }; result: SearchResultDto };
@@ -313,6 +314,39 @@ function mockViewport(generation: number, nodeId: number | null, metric: SizeMet
   };
 }
 
+/** Demo Changes view: leaf items of the demo tree with growth, plus the demo removed items. */
+function mockChanges(generation: number, kind: ChangeKindDto | null, limit: number): ChangesDto {
+  const all: ChangeDto[] = [];
+  const walk = (n: FsNode, parent: FsNode) => {
+    for (const r of removedHere(n)) {
+      all.push({ kind: "removed", nodeId: null, folderId: mockNodeId(n), name: r.name, path: `${n.path.replace(/\\$/, "")}\\${r.name}`,
+        isDir: r.isDir, bytes: -r.allocatedSize, beforeSize: r.allocatedSize, afterSize: null });
+    }
+    if (n.children?.length) {
+      n.children.forEach((c) => walk(c, n));
+      return;
+    }
+    if (n.deltaBytes === 0) return;
+    // Demo sizes are rounded; a change of (almost) the whole size means the item is new.
+    const added = n.deltaBytes >= n.sizeBytes * 0.999;
+    all.push({ kind: added ? "added" : n.deltaBytes > 0 ? "grew" : "shrank", nodeId: mockNodeId(n), folderId: mockNodeId(parent), name: n.name, path: n.path,
+      isDir: n.isDir, bytes: n.deltaBytes, beforeSize: added ? null : n.sizeBytes - n.deltaBytes, afterSize: n.sizeBytes });
+  };
+  walk(mockTree, mockTree);
+  const kinds: ChangeKindDto[] = ["added", "removed", "grew", "shrank", "smallFiles"];
+  const totals = kinds.map((k) => {
+    const of = all.filter((c) => c.kind === k);
+    return { kind: k, count: of.length, bytes: of.reduce((a, c) => a + c.bytes, 0) };
+  });
+  const grown = all.reduce((a, c) => a + Math.max(c.bytes, 0), 0);
+  const shrunk = all.reduce((a, c) => a + Math.max(-c.bytes, 0), 0);
+  const matching = all.filter((c) => kind === null || c.kind === kind).sort((a, b) => Math.abs(b.bytes) - Math.abs(a.bytes) || b.bytes - a.bytes);
+  return {
+    generation, previousScanAt: Math.floor(Date.now() / 1000) - 86_400, kind,
+    changes: matching.slice(0, limit), matching: matching.length, totals, grown, shrunk, net: grown - shrunk,
+  };
+}
+
 /** Demo Dev Junk, same shape and rules as `junk_projects` in Rust. */
 function mockDevJunk(generation: number): DevJunkDto {
   const nowSecs = Math.floor(Date.now() / 1000);
@@ -407,6 +441,14 @@ export const getViewport = (generation: number, nodeId: number | null, metric: S
 /** Dev Junk of scan `generation`: projects with rebuildable artifacts, largest first. */
 export const getDevJunk = (generation: number): Promise<DevJunkDto> =>
   isTauri() ? call("get_dev_junk", { generation }) : Promise.resolve(mockDevJunk(generation));
+
+/**
+ * Changes view of scan `generation` since the previous scan of the same location, like
+ * `git diff --stat`: the largest `limit` changes of `kind` (`null` = all kinds) and totals of
+ * every kind. Rejects when there is no previous scan.
+ */
+export const getChanges = (generation: number, kind: ChangeKindDto | null = null, limit: number | null = null): Promise<ChangesDto> =>
+  isTauri() ? call("get_changes", { generation, kind, limit }) : Promise.resolve(mockChanges(generation, kind, limit ?? 500));
 
 /** Safety Advisor verdict ("Can I delete this?") for one node; `system` = the backend refuses to delete it. */
 export const getAdvice = (generation: number, nodeId: number): Promise<AdviceDto> =>

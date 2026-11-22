@@ -19,6 +19,7 @@ pub fn run() {
             commands::start_scan,
             commands::cancel_scan,
             commands::get_viewport,
+            commands::get_changes,
             commands::get_dev_junk,
             commands::get_advice,
             commands::search_nodes,

@@ -6,9 +6,10 @@
 //! on 64-bit integers (values stay below 2^53).
 
 use disksieve_core::{
-    contains_junk, Advice, Delta, JunkKind, JunkProject, Node, NodeFlags, NodeId, OtherBucket,
-    SafetyLevel, ScanProgress, ScanTree, SearchResult, SieveReview, SieveStatus, SizeMetric,
-    SpaceBalance, TrashError, TrashOutcome, Viewport, ROOT,
+    contains_junk, Advice, Change, ChangeItem, ChangeKind, ChangeList, Delta, JunkKind,
+    JunkProject, Node, NodeFlags, NodeId, OtherBucket, SafetyLevel, ScanProgress, ScanTree,
+    SearchResult, SieveReview, SieveStatus, SizeMetric, SpaceBalance, TrashError, TrashOutcome,
+    Viewport, ROOT,
 };
 use std::time::Duration;
 
@@ -345,6 +346,190 @@ pub struct ViewportDto {
 
 /// Most removed items sent with one viewport.
 pub const MAX_REMOVED_ITEMS: usize = 200;
+
+/// Kind of one line of the Changes view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum ChangeKindDto {
+    Added,
+    Removed,
+    Grew,
+    Shrank,
+    SmallFiles,
+}
+
+impl From<ChangeKindDto> for ChangeKind {
+    fn from(k: ChangeKindDto) -> Self {
+        match k {
+            ChangeKindDto::Added => Self::Added,
+            ChangeKindDto::Removed => Self::Removed,
+            ChangeKindDto::Grew => Self::Grew,
+            ChangeKindDto::Shrank => Self::Shrank,
+            ChangeKindDto::SmallFiles => Self::SmallFiles,
+        }
+    }
+}
+
+impl From<ChangeKind> for ChangeKindDto {
+    fn from(k: ChangeKind) -> Self {
+        match k {
+            ChangeKind::Added => Self::Added,
+            ChangeKind::Removed => Self::Removed,
+            ChangeKind::Grew => Self::Grew,
+            ChangeKind::Shrank => Self::Shrank,
+            ChangeKind::SmallFiles => Self::SmallFiles,
+        }
+    }
+}
+
+/// One line of the Changes view.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ChangeDto {
+    pub kind: ChangeKindDto,
+    /// Item of the current scan (added, grew, shrank); `null` for removed items and small files.
+    pub node_id: Option<u32>,
+    /// Folder to open in the Explorer to see the change.
+    pub folder_id: u32,
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    /// Change in bytes on disk (negative for shrank and removed).
+    #[ts(type = "number")]
+    pub bytes: i64,
+    /// Size on disk in the previous scan; `null` when unknown (added items, small files).
+    #[ts(type = "number | null")]
+    pub before_size: Option<u64>,
+    /// Size on disk now; `null` for removed items and small files.
+    #[ts(type = "number | null")]
+    pub after_size: Option<u64>,
+}
+
+/// Number and sum of the changes of one kind.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ChangeTotalDto {
+    pub kind: ChangeKindDto,
+    pub count: u32,
+    #[ts(type = "number")]
+    pub bytes: i64,
+}
+
+/// Changes since the previous scan, like `git diff --stat`. The entries of all kinds add up
+/// to `net`, the change of the scan root.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ChangesDto {
+    #[ts(type = "number")]
+    pub generation: u64,
+    /// When the compared scan started, seconds since the UNIX epoch.
+    pub previous_scan_at: u32,
+    /// Filter the list was built with (`null` = all kinds).
+    pub kind: Option<ChangeKindDto>,
+    /// Largest changes first (at most the requested limit).
+    pub changes: Vec<ChangeDto>,
+    /// Changes matching the filter, including those not listed.
+    pub matching: u32,
+    /// Totals of every kind, independent of the filter.
+    pub totals: Vec<ChangeTotalDto>,
+    #[ts(type = "number")]
+    pub grown: u64,
+    #[ts(type = "number")]
+    pub shrunk: u64,
+    #[ts(type = "number")]
+    pub net: i64,
+}
+
+/// Label of the "small files" line of a folder.
+pub const SMALL_FILES_LABEL: &str = "Small files (< 1 MiB)";
+
+impl ChangesDto {
+    pub fn new(
+        tree: &ScanTree,
+        delta: &Delta,
+        kind: Option<ChangeKindDto>,
+        list: &ChangeList,
+    ) -> Self {
+        let changes = list
+            .changes
+            .iter()
+            .filter_map(|c| change_dto(tree, delta, c))
+            .collect();
+        Self {
+            generation: tree.generation(),
+            previous_scan_at: delta.taken_at(),
+            kind,
+            changes,
+            matching: list.matching,
+            totals: ChangeKind::ALL
+                .iter()
+                .map(|&k| {
+                    let t = list.total(k);
+                    ChangeTotalDto {
+                        kind: k.into(),
+                        count: t.count,
+                        bytes: t.bytes,
+                    }
+                })
+                .collect(),
+            grown: list.grown,
+            shrunk: list.shrunk,
+            net: list.net(),
+        }
+    }
+}
+
+fn change_dto(tree: &ScanTree, delta: &Delta, c: &Change) -> Option<ChangeDto> {
+    let kind = c.kind.into();
+    Some(match c.item {
+        ChangeItem::Node(id) => {
+            let node = tree.get(id)?;
+            ChangeDto {
+                kind,
+                node_id: Some(id),
+                folder_id: if id == ROOT { ROOT } else { node.parent },
+                name: tree.name(id).to_owned(),
+                path: tree.display_path(id),
+                is_dir: node.is_dir(),
+                bytes: c.bytes,
+                before_size: delta.before(id),
+                after_size: Some(node.contribution().1),
+            }
+        }
+        ChangeItem::Removed(i) => {
+            let r = delta.removed().get(i)?;
+            ChangeDto {
+                kind,
+                node_id: None,
+                folder_id: r.parent,
+                name: r.name.clone(),
+                path: std::path::Path::new(&tree.display_path(r.parent))
+                    .join(&r.name)
+                    .to_string_lossy()
+                    .into_owned(),
+                is_dir: r.is_dir,
+                bytes: c.bytes,
+                before_size: Some(r.allocated),
+                after_size: None,
+            }
+        }
+        ChangeItem::SmallFiles(folder) => ChangeDto {
+            kind,
+            node_id: None,
+            folder_id: folder,
+            name: SMALL_FILES_LABEL.to_owned(),
+            path: tree.display_path(folder),
+            is_dir: false,
+            bytes: c.bytes,
+            before_size: None,
+            after_size: None,
+        },
+    })
+}
 
 /// A file or folder of the previous scan that is gone now (deleted, moved or trashed).
 #[derive(Debug, Clone, Serialize, TS)]
@@ -981,6 +1166,58 @@ mod tests {
         assert_eq!(removed.allocated_size, 2 * MIB);
         assert!(!removed.is_dir);
         assert!(removed.path.ends_with("old.bin"), "{}", removed.path);
+    }
+
+    #[test]
+    fn changes_map_kinds_paths_and_totals() {
+        use disksieve_core::{list_changes, Snapshot};
+        const MIB: u64 = 1024 * 1024;
+        let dir = EntryMeta {
+            flags: NodeFlags::DIR,
+            ..EntryMeta::default()
+        };
+        let file = |size: u64| EntryMeta {
+            logical_size: size,
+            allocated_size: size,
+            mtime: 1_700_000_000,
+            flags: NodeFlags::empty(),
+        };
+        let build = |files: &[(&str, u64)]| {
+            let mut b = TreeBuilder::new("/scan", 3, dir);
+            let docs = b.push(ROOT, OsStr::new("docs"), dir).unwrap();
+            for &(name, size) in files {
+                b.push(docs, OsStr::new(name), file(size)).unwrap();
+            }
+            (b.finish(Duration::ZERO), docs)
+        };
+        let (before, _) = build(&[("old.bin", 2 * MIB), ("grow.bin", 2 * MIB), ("a.txt", 10)]);
+        let (after, docs) = build(&[("grow.bin", 5 * MIB), ("a.txt", 30)]);
+        let delta = Delta::compute(&after, &Snapshot::capture(&before));
+        let list = list_changes(&after, &delta, None, 500);
+        let dto = ChangesDto::new(&after, &delta, None, &list);
+
+        assert_eq!(dto.generation, 3);
+        assert_eq!(dto.matching, 3);
+        let grew = &dto.changes[0];
+        assert_eq!(grew.kind, ChangeKindDto::Grew);
+        assert_eq!(grew.folder_id, docs);
+        assert_eq!(
+            (grew.before_size, grew.after_size),
+            (Some(2 * MIB), Some(5 * MIB))
+        );
+        let removed = &dto.changes[1];
+        assert_eq!(removed.kind, ChangeKindDto::Removed);
+        assert_eq!(removed.node_id, None);
+        assert!(removed.path.ends_with("old.bin"), "{}", removed.path);
+        let small = &dto.changes[2];
+        assert_eq!(small.kind, ChangeKindDto::SmallFiles);
+        assert_eq!((small.bytes, small.folder_id), (20, docs));
+        assert_eq!(dto.net, dto.changes.iter().map(|c| c.bytes).sum::<i64>());
+        assert_eq!(dto.totals.len(), 5);
+
+        let json = serde_json::to_value(&dto).unwrap();
+        assert_eq!(json["changes"][2]["kind"], "smallFiles", "{json}");
+        assert!(json["changes"][1]["afterSize"].is_null(), "{json}");
     }
 
     #[test]

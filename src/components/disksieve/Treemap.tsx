@@ -51,7 +51,8 @@ export function Treemap({ parentName, items, valueOf, mode, signed, onActivate, 
       });
       ro = new ResizeObserver(() => c.resize());
       ro.observe(el.current);
-      render();
+      // The latest props: they may have changed while ECharts was loading.
+      renderLatest.current();
     });
     return () => { disposed = true; ro?.disconnect(); chart.current?.dispose(); chart.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -103,6 +104,8 @@ export function Treemap({ parentName, items, valueOf, mode, signed, onActivate, 
     }, { replaceMerge: ["series"] });
   };
 
+  const renderLatest = useRef(render);
+  renderLatest.current = render;
   useEffect(render);
 
   return (

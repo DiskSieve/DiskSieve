@@ -373,6 +373,9 @@ pub struct RemovedEntry {
 pub struct Delta {
     taken_at: u32,
     bytes: Vec<i64>,
+    /// Size of each node in the snapshot; `None` when it was not stored (new, a small file,
+    /// or moved to Trash).
+    before: Vec<Option<u64>>,
     /// Sorted by parent, then largest first.
     removed: Vec<RemovedEntry>,
 }
@@ -388,13 +391,16 @@ impl Delta {
         };
         let alive = alive_nodes(tree);
         let signed = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
+        let before: Vec<Option<u64>> = (0..tree.len())
+            .map(|i| alive[i].then(|| snapshot.allocated(hashes[i])).flatten())
+            .collect();
         let bytes = (0..tree.len())
             .map(|i| {
                 let Some(node) = tree.get(i as NodeId).filter(|_| alive[i]) else {
                     return 0;
                 };
                 let (_, allocated, _) = node.contribution();
-                match snapshot.allocated(hashes[i]) {
+                match before[i] {
                     Some(before) => signed(allocated).saturating_sub(signed(before)),
                     None if node.is_dir() || allocated >= MIN_FILE_SIZE => signed(allocated),
                     None => 0,
@@ -435,6 +441,7 @@ impl Delta {
         Self {
             taken_at: snapshot.taken_at,
             bytes,
+            before,
             removed,
         }
     }
@@ -447,6 +454,12 @@ impl Delta {
     /// Change of node `id` in bytes on disk (0 for trashed nodes).
     pub fn bytes(&self, id: NodeId) -> Option<i64> {
         self.bytes.get(id as usize).copied()
+    }
+
+    /// Size of node `id` in the snapshot; `None` when it was not stored there (new, a small
+    /// file, or moved to Trash since).
+    pub fn before(&self, id: NodeId) -> Option<u64> {
+        self.before.get(id as usize).copied().flatten()
     }
 
     /// Changes of all nodes, indexed by `NodeId`.

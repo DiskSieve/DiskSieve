@@ -8,6 +8,7 @@
 
 pub mod aggregator;
 pub mod balance;
+pub mod changes;
 pub mod dev_junk;
 pub mod error;
 pub mod safety;
@@ -23,6 +24,9 @@ pub use aggregator::{
     DEFAULT_MAX_ITEMS,
 };
 pub use balance::{is_volume_root, SpaceBalance};
+pub use changes::{
+    list_changes, Change, ChangeItem, ChangeKind, ChangeList, KindTotal, DEFAULT_CHANGES_LIMIT,
+};
 pub use dev_junk::{contains_junk, detect_junk, junk_projects, JunkKind, JunkProject};
 pub use error::{CoreError, CoreResult};
 pub use safety::{
