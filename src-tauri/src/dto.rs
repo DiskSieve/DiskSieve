@@ -126,6 +126,11 @@ pub struct ScanSummaryDto {
     pub duration_ms: u64,
     /// Volume usage vs. scan result; `null` unless a whole volume was scanned.
     pub volume: Option<SpaceBalanceDto>,
+    /// When the previous snapshot of this root was taken (seconds since the UNIX epoch);
+    /// `null` on the first scan of this root.
+    pub previous_snapshot_at: Option<u32>,
+    /// Why the previous snapshot was ignored or the new one was not saved; `null` when fine.
+    pub snapshot_warning: Option<String>,
 }
 
 /// Space reconciliation of a whole-volume scan (all values in bytes).
@@ -186,6 +191,8 @@ impl ScanSummaryDto {
                 .collect(),
             duration_ms: u64::try_from(tree.stats().duration.as_millis()).unwrap_or(u64::MAX),
             volume: volume.map(Into::into),
+            previous_snapshot_at: None,
+            snapshot_warning: None,
         }
     }
 }

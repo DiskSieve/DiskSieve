@@ -12,4 +12,13 @@ skippedSamples: Array<string>, durationMs: number,
 /**
  * Volume usage vs. scan result; `null` unless a whole volume was scanned.
  */
-volume: SpaceBalanceDto | null, };
+volume: SpaceBalanceDto | null, 
+/**
+ * When the previous snapshot of this root was taken (seconds since the UNIX epoch);
+ * `null` on the first scan of this root.
+ */
+previousSnapshotAt: number | null, 
+/**
+ * Why the previous snapshot was ignored or the new one was not saved; `null` when fine.
+ */
+snapshotWarning: string | null, };

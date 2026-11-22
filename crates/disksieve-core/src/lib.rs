@@ -15,6 +15,7 @@ pub mod safety_advisor;
 pub mod scanner;
 pub mod search;
 pub mod sieve;
+pub mod snapshot;
 pub mod tree;
 
 pub use aggregator::{
@@ -34,6 +35,9 @@ pub use safety_advisor::{
 pub use scanner::{scan, CancelToken, ScanOptions, ScanProgress};
 pub use search::{search_nodes, SearchResult, DEFAULT_SEARCH_LIMIT};
 pub use sieve::{review_sieve, SieveEntry, SieveReview, SieveStatus};
+pub use snapshot::{
+    load_previous, path_hashes, snapshot_path, Snapshot, SnapshotError, SNAPSHOT_FORMAT_VERSION,
+};
 pub use tree::{
     EntryMeta, Node, NodeFlags, NodeId, ScanStats, ScanTree, TreeBuilder, NO_NODE, ROOT,
 };

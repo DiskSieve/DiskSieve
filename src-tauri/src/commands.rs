@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use disksieve_core::{
-    build_viewport, detect_junk, is_volume_root, junk_projects, move_to_system_trash,
-    restore_from_system_trash, review_sieve as review_basket, Advisor, CoreError, Guard, Platform,
-    ScanOptions, ScanTree, SpaceBalance, ViewportOptions, DEFAULT_SEARCH_LIMIT, RESTORE_SUPPORTED,
-    ROOT,
+    build_viewport, detect_junk, is_volume_root, junk_projects, load_previous,
+    move_to_system_trash, restore_from_system_trash, review_sieve as review_basket, snapshot_path,
+    Advisor, CoreError, Guard, Platform, ScanOptions, ScanTree, Snapshot, SpaceBalance,
+    ViewportOptions, DEFAULT_SEARCH_LIMIT, RESTORE_SUPPORTED, ROOT,
 };
 use sysinfo::{DiskKind, Disks};
 use tauri::ipc::Channel;
@@ -94,7 +94,10 @@ pub async fn start_scan(
                 // Dev Junk works on the tree alone (no disk access), so it is part of the scan.
                 detect_junk(&mut tree);
                 let scanned = tree.get(ROOT).map_or(0, |n| n.allocated_size);
-                let summary = ScanSummaryDto::from_tree(&tree, volume_balance(&root, scanned));
+                let mut summary = ScanSummaryDto::from_tree(&tree, volume_balance(&root, scanned));
+                let (previous, warning) = rotate_snapshot(&app, &tree);
+                summary.previous_snapshot_at = previous;
+                summary.snapshot_warning = warning;
                 Ok(state
                     .finish_scan(handle.generation, Some(tree))
                     .then_some(summary))
@@ -111,6 +114,30 @@ pub async fn start_scan(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Folder (inside the app data directory) with the latest snapshot of every scanned root.
+const SNAPSHOT_DIR: &str = "snapshots";
+
+/// Reads the previous snapshot of the scanned root (its time is returned for Delta Mode),
+/// then replaces it with a snapshot of `tree`. Snapshot problems never fail the scan; they
+/// come back as a warning for the UI.
+fn rotate_snapshot(app: &AppHandle, tree: &ScanTree) -> (Option<u32>, Option<String>) {
+    let dir = match app.path().app_data_dir() {
+        Ok(dir) => dir.join(SNAPSHOT_DIR),
+        Err(e) => return (None, Some(format!("Scan snapshots are unavailable: {e}."))),
+    };
+    let root = tree.root_path();
+    let mut warnings = Vec::new();
+    let previous = load_previous(&dir, root).unwrap_or_else(|e| {
+        warnings.push(format!("The previous scan snapshot was ignored: {e}."));
+        None
+    });
+    if let Err(e) = Snapshot::capture(tree).save(&snapshot_path(&dir, root)) {
+        warnings.push(format!("The scan snapshot could not be saved: {e}."));
+    }
+    let warning = (!warnings.is_empty()).then(|| warnings.join(" "));
+    (previous.map(|s| s.taken_at()), warning)
 }
 
 /// Cancels the scan in progress. Returns `false` when no scan was running.

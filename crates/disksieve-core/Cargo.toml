@@ -12,9 +12,12 @@ authors.workspace = true
 # NOTE: this crate must never depend on `tauri`, `webview2`, `webkit2gtk` or any windowing layer.
 [dependencies]
 bitflags.workspace = true
+postcard.workspace = true
 rayon.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 trash.workspace = true
+zstd.workspace = true
 
 # Cluster size (GetDiskFreeSpaceW) and exact on-disk size of compressed/sparse files
 # (GetCompressedFileSizeW) — safe wrappers, so no `unsafe` in our code.
