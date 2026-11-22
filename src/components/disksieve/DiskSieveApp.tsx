@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { ArrowUp, ChevronRight, Copy, File, Folder, FolderOpen, HardDrive, Layers, Lightbulb, ShieldAlert, ShieldCheck, RefreshCw, Trash2, Eye, ExternalLink } from "lucide-react";
+import { ArrowUp, ChevronRight, Copy, File, Folder, FolderOpen, HardDrive, Layers, Lightbulb, ShieldAlert, ShieldCheck, RefreshCw, ShoppingBasket, Trash2, Eye, ExternalLink } from "lucide-react";
 import { flatten, hintFor, initialDrive, removeNode, type FsNode } from "@/data/mockDrive";
 import { copyText } from "@/lib/clipboard";
 import type { TrashTarget } from "@/lib/trash";
@@ -11,6 +11,8 @@ import { ScanProgressDialog, ScanTargetDialog, formatDuration, usedBytes } from 
 import { SpaceBalanceSheet, SpaceBalanceTile } from "./SpaceBalance";
 import { Treemap, otherLabel } from "./Treemap";
 import { DevJunkView } from "./DevJunkView";
+import { SieveBasket } from "./SieveBasket";
+import { LEVELS } from "@/lib/advice";
 import { SearchPalette } from "./SearchPalette";
 import { DuplicatesView, initialDuplicates, wastedBytes } from "./DuplicatesView";
 import { Button } from "@/components/ui/button";
@@ -26,8 +28,8 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
-import { appInfo, cancelScan, getAdvice, getDevJunk, getViewport, isTauri, listDrives, mockNodeId, openTrash, pickFolder, restoreNodes, revealInExplorer, setMockTree, startScan, trashNodes } from "@/lib/ipc";
-import type { AdviceDto, AppInfoDto, DevJunkDto, DriveDto, ScanProgressDto, ScanSummaryDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
+import { appInfo, cancelScan, getAdvice, getDevJunk, getViewport, isTauri, listDrives, mockNodeId, openTrash, pickFolder, restoreNodes, revealInExplorer, reviewSieve, setMockTree, startScan, trashNodes } from "@/lib/ipc";
+import type { AdviceDto, AppInfoDto, DevJunkDto, DriveDto, ScanProgressDto, ScanSummaryDto, SieveDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
 
 type Tab = "explorer" | "junk" | "dups";
 const MODES: { key: ColorMode; label: string }[] = [{ key: "extension", label: "By Extension" }, { key: "age", label: "Cold Data (Age)" }, { key: "junk", label: "Dev Junk" }];
@@ -148,6 +150,46 @@ export function DiskSieveApp() {
     return () => { live = false; };
   }, [generation, inspectedId, treeVersion]);
 
+  // Sieve Basket: node ids collected for one "Move to Trash", reviewed by the backend.
+  const [basket, setBasket] = useState<number[]>([]);
+  const [sieve, setSieve] = useState<SieveDto | null>(null);
+  const [sieveError, setSieveError] = useState<string | null>(null);
+  const [sieveOpen, setSieveOpen] = useState(false);
+  useEffect(() => {
+    if (generation === null || !basket.length) {
+      setSieve(null);
+      setSieveError(null);
+      return;
+    }
+    let live = true;
+    reviewSieve(generation, basket)
+      .then((s) => {
+        if (!live || s.generation !== generation) return;
+        setSieveError(null);
+        // Items moved to Trash meanwhile (also from other views) leave the basket.
+        if (s.missing.length) setBasket((b) => b.filter((id) => !s.missing.includes(id)));
+        setSieve(s);
+      })
+      .catch((e: unknown) => { if (live) setSieveError(e instanceof Error ? e.message : String(e)); });
+    return () => { live = false; };
+  }, [generation, basket, tree, treeVersion]);
+  const inSieve = (id: number | null) => id !== null && basket.includes(id);
+  const addToSieve = (ids: number[]) => {
+    const fresh = ids.filter((id) => !basket.includes(id));
+    if (!fresh.length) {
+      toast("Already in the Sieve");
+      return;
+    }
+    setBasket((b) => [...b, ...fresh.filter((id) => !b.includes(id))]);
+    toast.success(fresh.length === 1 ? "Added to Sieve" : `Added ${fresh.length} items to Sieve`, { action: { label: "Open Sieve", onClick: () => setSieveOpen(true) } });
+  };
+  const removeFromSieve = (id: number) => setBasket((b) => b.filter((x) => x !== id));
+  const toggleSieve = (n: TreemapNodeDto) => {
+    if (n.id === null) return;
+    if (inSieve(n.id)) removeFromSieve(n.id);
+    else addToSieve([n.id]);
+  };
+
   const all = useMemo(() => flatten(tree), [tree]);
   const breadcrumbs = viewport?.breadcrumbs ?? [];
   const valueOf = useCallback((n: TreemapNodeDto) => (delta ? n.deltaBytes ?? 0 : n.value), [delta]);
@@ -254,6 +296,7 @@ export function DiskSieveApp() {
         setCurrentId(null);
         setInspected(null);
         setCtxNode(null);
+        setBasket([]);
         toast.success("Scan complete", {
           description: `${result.fileCount.toLocaleString()} files · ${formatBytes(result.allocatedBytes)} in ${formatDuration(result.durationMs)}`,
         });
@@ -312,6 +355,7 @@ export function DiskSieveApp() {
       <ContextMenuItem disabled={!ctxNode} onSelect={() => ctxNode && reveal(ctxNode)}><ExternalLink className="h-4 w-4" />{revealLabel(os)}</ContextMenuItem>
       <ContextMenuItem disabled={!ctxNode} onSelect={() => ctxNode && copyPath(ctxNode)}><Copy className="h-4 w-4" />Copy Full Path</ContextMenuItem>
       <ContextMenuSeparator />
+      <ContextMenuItem disabled={!ctxNode} onSelect={() => ctxNode && toggleSieve(ctxNode)}><ShoppingBasket className="h-4 w-4" />{ctxNode && inSieve(ctxNode.id) ? "Remove from Sieve" : "Add to Sieve"}</ContextMenuItem>
       <ContextMenuItem disabled={!ctxNode || trashBlocked(ctxNode)} className="text-destructive focus:text-destructive" onSelect={() => ctxNode && setConfirmTrash([ctxNode])}><Trash2 className="h-4 w-4" />Move to Trash…</ContextMenuItem>
     </ContextMenuContent>
   );
@@ -364,6 +408,11 @@ export function DiskSieveApp() {
           </Tabs>
 
           <div className="ml-auto flex items-center gap-2 md:gap-3 lg:ml-0">
+            <Button size="sm" variant={basket.length ? "default" : "outline"} className="h-8" onClick={() => setSieveOpen(true)} aria-label="Open Sieve">
+              <ShoppingBasket className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Sieve</span>
+              {basket.length > 0 && <span className="font-mono text-[11px] tabular-nums">{basket.length} · {sieve ? formatBytes(sieve.allocatedBytes) : "…"}</span>}
+            </Button>
             <Tooltip><TooltipTrigger asChild>
               <label className={cn("flex items-center gap-2 text-xs text-muted-foreground", deltaAvailable ? "cursor-pointer" : "cursor-not-allowed opacity-50")}>
                 <Switch checked={delta} onCheckedChange={setDelta} disabled={!deltaAvailable} />
@@ -475,15 +524,18 @@ export function DiskSieveApp() {
           </>
         )}
         {tab === "junk" && <DevJunkView data={devJunk} error={devJunkError} scanned={generation !== null} revealLabel={revealLabel(os)}
-          onTrash={setConfirmTrash} onReveal={(id, path) => reveal({ id, path })} onScan={() => setTargetOpen(true)} />}
+          onTrash={setConfirmTrash} onSieve={addToSieve} onReveal={(id, path) => reveal({ id, path })} onScan={() => setTargetOpen(true)} />}
         {tab === "dups" && <DuplicatesView groups={dups} setGroups={setDups} />}
 
         {/* Inspector */}
         <Sheet open={!!inspected} onOpenChange={(o) => !o && setInspected(null)}>
           <SheetContent className="w-full overflow-y-auto sm:w-[420px] sm:max-w-[420px]">
-            {inspected && <Inspector n={inspected} os={os} advice={advice?.nodeId === inspected.id ? advice : null} adviceError={adviceError} onTrash={() => setConfirmTrash([inspected])} onCopy={() => copyPath(inspected)} onReveal={() => reveal(inspected)} />}
+            {inspected && <Inspector n={inspected} os={os} advice={advice?.nodeId === inspected.id ? advice : null} adviceError={adviceError} inSieve={inSieve(inspected.id)} onSieve={() => toggleSieve(inspected)} onTrash={() => setConfirmTrash([inspected])} onCopy={() => copyPath(inspected)} onReveal={() => reveal(inspected)} />}
           </SheetContent>
         </Sheet>
+
+        <SieveBasket open={sieveOpen} onOpenChange={setSieveOpen} count={basket.length} sieve={sieve} error={sieveError}
+          onRemove={removeFromSieve} onClear={() => setBasket([])} onInspect={setInspected} onTrash={setConfirmTrash} />
 
         <TrashConfirmDialog nodes={confirmTrash} os={os} onCancel={() => setConfirmTrash(null)}
           onConfirm={() => { if (confirmTrash) moveToTrash(confirmTrash); setConfirmTrash(null); }} />
@@ -497,6 +549,7 @@ export function DiskSieveApp() {
             ...METRICS.map((m) => ({ label: `Size: ${m.label}`, run: () => { setMetric(m.key); setTab("explorer"); setCmdOpen(false); } })),
             ...(deltaAvailable ? [{ label: "Toggle Delta Mode", run: () => { setDelta((d) => !d); setCmdOpen(false); } }] : []),
             { label: "Open Dev Junk cleaner", run: () => { setTab("junk"); setCmdOpen(false); } },
+            { label: "Open Sieve", run: () => { setSieveOpen(true); setCmdOpen(false); } },
             { label: "Open Duplicates finder", run: () => { setTab("dups"); setCmdOpen(false); } },
             { label: "Rescan drive", run: () => { setCmdOpen(false); rescan(); } },
           ]} />
@@ -542,12 +595,6 @@ function TrashConfirmDialog({ nodes, os, onCancel, onConfirm }: { nodes: TrashTa
   );
 }
 
-const LEVELS: Record<AdviceDto["level"], { badge: string; box: string; icon: string; pill: string }> = {
-  safe: { badge: "Safe to delete", box: "border-primary/40 bg-primary/10", icon: "text-primary", pill: "" },
-  review: { badge: "Review first", box: "border-warning/40 bg-warning/10", icon: "text-warning", pill: "bg-warning text-warning-foreground" },
-  system: { badge: "Protected", box: "border-destructive/40 bg-destructive/10", icon: "text-destructive", pill: "bg-destructive text-destructive-foreground" },
-};
-
 /** Text with `backtick` spans rendered as inline code. */
 function RichText({ text }: { text: string }) {
   return <>{text.split("`").map((part, i) => (i % 2 ? <code key={i} className="rounded bg-muted px-1 font-mono text-[0.85em] text-foreground">{part}</code> : <Fragment key={i}>{part}</Fragment>))}</>;
@@ -558,7 +605,7 @@ function copyCommand(command: string) {
     .catch((e: Error) => toast.error("Could not copy the command", { description: e.message }));
 }
 
-function Inspector({ n, os, advice, adviceError, onTrash, onCopy, onReveal }: { n: TreemapNodeDto; os: string; advice: AdviceDto | null; adviceError: string | null; onTrash: () => void; onCopy: () => void; onReveal: () => void }) {
+function Inspector({ n, os, advice, adviceError, inSieve, onSieve, onTrash, onCopy, onReveal }: { n: TreemapNodeDto; os: string; advice: AdviceDto | null; adviceError: string | null; inSieve: boolean; onSieve: () => void; onTrash: () => void; onCopy: () => void; onReveal: () => void }) {
   const blocked = advice?.protectedReason ?? protectedReason(n);
   const ui = advice ? LEVELS[advice.level] : null;
   const rows: [string, string][] = [
@@ -614,6 +661,7 @@ function Inspector({ n, os, advice, adviceError, onTrash, onCopy, onReveal }: { 
           <Button variant="outline" className="flex-1" onClick={onReveal}><ExternalLink className="h-4 w-4" />{revealLabel(os)}</Button>
           <Button variant="outline" className="flex-1" onClick={onCopy}><Copy className="h-4 w-4" />Copy Path</Button>
         </div>
+        <Button variant="outline" className="w-full" onClick={onSieve}><ShoppingBasket className="h-4 w-4" />{inSieve ? "Remove from Sieve" : "Add to Sieve"}</Button>
         <Button variant="destructive" className="w-full" disabled={advice?.level === "system" || !!blocked} onClick={onTrash}><Trash2 className="h-4 w-4" />Move to Trash…</Button>
       </div>
     </div>

@@ -79,7 +79,7 @@ Existing tools show *what* takes up space, then leave you alone with the harder 
 | ✅ | **Dev Junk** | Build artifacts detected by project marker files (no false hits on any random `build/` folder or inside installed apps), grouped by project and its age, cleaned in bulk via the Trash. |
 | ✅ | **Search (`Ctrl+K`)** | Instant name search in the scanned tree — no disk access. The 50 largest matches, one keystroke to jump to the folder. |
 | ✅ | **Safety Advisor** | A verdict for every item (*safe* / *review* / *protected*) with an explanation and a safer alternative (e.g. `powercfg /hibernate off` instead of deleting `hiberfil.sys`). ~100 rules for Windows, macOS and Linux — see [all rules](docs/safety-advisor.md). |
-| 🗓️ | **Sieve Basket** | Collect items from every view, see the total space reclaimed and safety warnings, then trash them in one go. |
+| ✅ | **Sieve Basket** | Collect items from the treemap and Dev Junk, see the total space reclaimed, the Safety Advisor verdicts and warnings, then move them all to Trash with one confirmation. Items inside a collected folder are counted once; protected items are skipped. |
 | 🗓️ | **Delta Mode** | Compare with previous scans: the treemap shows only what grew. |
 | 🗓️ | **Duplicates** | Size → partial hash → full BLAKE3, skipping hard links and cloud-only files. |
 | 🗓️ | **NTFS MFT engine** | WizTree-class scan speed on Windows (1 million files in under 3 s). |
@@ -87,7 +87,7 @@ Existing tools show *what* takes up space, then leave you alone with the harder 
 
 ## Project status
 
-**`v0.1.0`** — the MVP — is complete. `v0.2.0` is in progress: the Safety Advisor is done; next up are the Sieve Basket, Delta Mode and duplicates.
+**`v0.1.0`** — the MVP — is complete. `v0.2.0` is in progress: the Safety Advisor and the Sieve Basket are done; next up are Delta Mode and duplicates.
 
 | Phase | Scope | Status |
 | :--- | :--- | :---: |
@@ -135,8 +135,8 @@ Existing tools show *what* takes up space, then leave you alone with the harder 
 - [x] Release: icons, installers for 3 OSes, portable `.exe`, `SHA256SUMS.txt`
 
 ### `v0.2.0` — Decision context
-- [ ] Safety Advisor rules
-- [ ] Sieve Basket
+- [x] Safety Advisor rules
+- [x] Sieve Basket
 - [ ] Scan snapshots and Delta Mode
 - [ ] Duplicate finder (BLAKE3)
 

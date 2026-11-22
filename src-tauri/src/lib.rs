@@ -22,6 +22,7 @@ pub fn run() {
             commands::get_dev_junk,
             commands::get_advice,
             commands::search_nodes,
+            commands::review_sieve,
             commands::trash_nodes,
             commands::restore_nodes,
             commands::reveal_in_explorer,

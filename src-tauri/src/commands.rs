@@ -7,8 +7,9 @@ use std::time::Instant;
 
 use disksieve_core::{
     build_viewport, detect_junk, is_volume_root, junk_projects, move_to_system_trash,
-    restore_from_system_trash, Advisor, CoreError, Guard, Platform, ScanOptions, ScanTree,
-    SpaceBalance, ViewportOptions, DEFAULT_SEARCH_LIMIT, RESTORE_SUPPORTED, ROOT,
+    restore_from_system_trash, review_sieve as review_basket, Advisor, CoreError, Guard, Platform,
+    ScanOptions, ScanTree, SpaceBalance, ViewportOptions, DEFAULT_SEARCH_LIMIT, RESTORE_SUPPORTED,
+    ROOT,
 };
 use sysinfo::{DiskKind, Disks};
 use tauri::ipc::Channel;
@@ -18,7 +19,7 @@ use tauri_plugin_opener::OpenerExt;
 
 use crate::dto::{
     AdviceDto, AppInfoDto, DevJunkDto, DriveDto, ScanProgressDto, ScanSummaryDto, SearchResultDto,
-    SizeMetricDto, TrashReportDto, ViewportDto,
+    SieveDto, SizeMetricDto, TrashReportDto, ViewportDto,
 };
 use crate::state::AppState;
 
@@ -191,6 +192,28 @@ pub async fn get_advice(
         .advise(tree, node_id, &guard)
         .map_err(|e| e.to_string())?;
     Ok(AdviceDto::new(generation, node_id, &advice))
+}
+
+/// Reviews the Sieve Basket — nodes collected for one "Move to Trash" — of scan `generation`:
+/// Safety Advisor verdicts, items already inside another collected folder, items the guard
+/// refuses, and the total that emptying the basket frees.
+#[tauri::command]
+pub async fn review_sieve(
+    app: AppHandle,
+    generation: u64,
+    node_ids: Vec<u32>,
+) -> Result<SieveDto, String> {
+    let guard = delete_guard(&app);
+    let advisor = Advisor::new(Platform::CURRENT, app.path().home_dir().ok().as_deref());
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let slot = state.tree();
+        let tree = current(slot.as_ref(), generation)?;
+        let review = review_basket(tree, &node_ids, &advisor, &guard);
+        Ok(SieveDto::new(tree, generation, &review))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Moves nodes of scan `generation` to the system Trash. Every node passes the backend guard
