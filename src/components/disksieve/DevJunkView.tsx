@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
-import { ChevronRight, ExternalLink, FolderOpen, Info, Sparkles, Trash2 } from "lucide-react";
+import { ChevronRight, ExternalLink, FolderOpen, Info, ShoppingBasket, Sparkles, Trash2 } from "lucide-react";
 import type { DevJunkDto, JunkArtifactDto, JunkProjectDto } from "@/types/ipc";
 import { daysSince, formatBytes, formatMtime } from "@/lib/format";
 import { junkLabel } from "@/lib/junk";
@@ -26,11 +26,13 @@ interface Props {
   scanned: boolean;
   revealLabel: string;
   onTrash: (targets: TrashTarget[]) => void;
+  /** Adds artifacts (node ids) to the Sieve Basket. */
+  onSieve: (ids: number[]) => void;
   onReveal: (id: number, path: string) => void;
   onScan: () => void;
 }
 
-export function DevJunkView({ data, error, scanned, revealLabel, onTrash, onReveal, onScan }: Props) {
+export function DevJunkView({ data, error, scanned, revealLabel, onTrash, onSieve, onReveal, onScan }: Props) {
   const [filter, setFilter] = useState(ALL);
   const [selected, setSelected] = useState<Set<number>>(() => new Set());
   const [expanded, setExpanded] = useState<Set<number>>(() => new Set());
@@ -98,9 +100,14 @@ export function DevJunkView({ data, error, scanned, revealLabel, onTrash, onReve
             ))}
           </div>
         </div>
+        <div className="flex flex-wrap gap-2">
+        <Button variant="outline" disabled={!chosen.length} onClick={() => onSieve(chosen.flatMap((r) => r.artifacts.map((a) => a.id)))}>
+          <ShoppingBasket className="h-4 w-4" />Add to Sieve
+        </Button>
         <Button disabled={!chosen.length} onClick={() => onTrash(chosen.flatMap((r) => r.artifacts.map(toTarget)))} className="shadow-glow">
           <Trash2 className="h-4 w-4" />Move Selected to Trash <span className="font-mono tabular-nums">({formatBytes(chosenBytes)})</span>
         </Button>
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-border bg-card">
@@ -151,6 +158,7 @@ export function DevJunkView({ data, error, scanned, revealLabel, onTrash, onReve
                     <TableCell>
                       <div className="flex justify-end gap-0.5">
                         <IconButton label={revealLabel} onClick={() => onReveal(p.id, p.path)}><ExternalLink className="h-3.5 w-3.5" /></IconButton>
+                        <IconButton label="Add this project's artifacts to Sieve" onClick={() => onSieve(artifacts.map((a) => a.id))}><ShoppingBasket className="h-3.5 w-3.5" /></IconButton>
                         <IconButton label="Move this project's artifacts to Trash" danger onClick={() => onTrash(artifacts.map(toTarget))}><Trash2 className="h-3.5 w-3.5" /></IconButton>
                       </div>
                     </TableCell>
@@ -167,6 +175,7 @@ export function DevJunkView({ data, error, scanned, revealLabel, onTrash, onReve
                       <TableCell>
                         <div className="flex justify-end gap-0.5">
                           <IconButton label={revealLabel} onClick={() => onReveal(a.id, a.path)}><ExternalLink className="h-3.5 w-3.5" /></IconButton>
+                          <IconButton label="Add to Sieve" onClick={() => onSieve([a.id])}><ShoppingBasket className="h-3.5 w-3.5" /></IconButton>
                           <IconButton label="Move to Trash" danger onClick={() => onTrash([toTarget(a)])}><Trash2 className="h-3.5 w-3.5" /></IconButton>
                         </div>
                       </TableCell>

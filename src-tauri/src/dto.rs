@@ -7,8 +7,8 @@
 
 use disksieve_core::{
     contains_junk, Advice, JunkKind, JunkProject, Node, NodeFlags, NodeId, OtherBucket,
-    SafetyLevel, ScanProgress, ScanTree, SearchResult, SizeMetric, SpaceBalance, TrashError,
-    TrashOutcome, Viewport, ROOT,
+    SafetyLevel, ScanProgress, ScanTree, SearchResult, SieveReview, SieveStatus, SizeMetric,
+    SpaceBalance, TrashError, TrashOutcome, Viewport, ROOT,
 };
 use std::time::Duration;
 
@@ -674,6 +674,91 @@ impl AdviceDto {
                 command: a.command.map(str::to_owned),
             }),
             protected_reason: advice.protected.map(|r| sentence(&r.to_string())),
+        }
+    }
+}
+
+/// What moving the whole Sieve Basket to Trash does with one item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum SieveStatusDto {
+    /// Moved to Trash itself.
+    Ready,
+    /// Inside another collected folder (`coveredBy`), which takes it along.
+    Covered,
+    /// Refused by the backend guard; skipped.
+    Protected,
+}
+
+/// One collected item of the Sieve Basket with its Safety Advisor verdict.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SieveItemDto {
+    /// `value` is the allocated size this item frees (0 for hard links counted elsewhere).
+    pub node: TreemapNodeDto,
+    pub status: SieveStatusDto,
+    /// Collected folder that contains this item (only for `covered`).
+    pub covered_by: Option<u32>,
+    pub advice: AdviceDto,
+}
+
+/// The reviewed Sieve Basket. Totals and counts cover only `ready` items.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SieveDto {
+    #[ts(type = "number")]
+    pub generation: u64,
+    /// Items in the order they were collected.
+    pub items: Vec<SieveItemDto>,
+    /// Collected ids no longer in the tree (already moved to Trash); drop them from the basket.
+    pub missing: Vec<u32>,
+    #[ts(type = "number")]
+    pub allocated_bytes: u64,
+    #[ts(type = "number")]
+    pub logical_bytes: u64,
+    #[ts(type = "number")]
+    pub file_count: u64,
+    pub safe_count: u32,
+    pub review_count: u32,
+    pub protected_count: u32,
+    /// Ids to pass to `trash_nodes` to empty the basket.
+    pub trashable_ids: Vec<u32>,
+}
+
+impl SieveDto {
+    pub fn new(tree: &ScanTree, generation: u64, review: &SieveReview) -> Self {
+        let items = review
+            .entries
+            .iter()
+            .filter_map(|e| {
+                let node = tree.get(e.id)?;
+                let (status, covered_by) = match e.status {
+                    SieveStatus::Ready => (SieveStatusDto::Ready, None),
+                    SieveStatus::Covered(by) => (SieveStatusDto::Covered, Some(by)),
+                    SieveStatus::Protected => (SieveStatusDto::Protected, None),
+                };
+                Some(SieveItemDto {
+                    node: TreemapNodeDto::from_node(tree, e.id, node, node.contribution().1),
+                    status,
+                    covered_by,
+                    advice: AdviceDto::new(generation, e.id, &e.advice),
+                })
+            })
+            .collect();
+        Self {
+            generation,
+            items,
+            missing: review.missing.clone(),
+            allocated_bytes: review.allocated_size,
+            logical_bytes: review.logical_size,
+            file_count: review.file_count,
+            safe_count: review.safe,
+            review_count: review.review,
+            protected_count: review.protected,
+            trashable_ids: review.trashable(),
         }
     }
 }

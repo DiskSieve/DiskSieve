@@ -3,7 +3,7 @@
 // Inside the desktop app every call goes to Rust. In a plain browser (`npm run dev`) there is
 // no Tauri runtime, so the same functions resolve with demo data — the UI code never branches.
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { AdviceDto, AppInfoDto, DevJunkDto, DriveDto, JunkProjectDto, ScanProgressDto, ScanSummaryDto, SearchResultDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
+import type { AdviceDto, AppInfoDto, DevJunkDto, DriveDto, JunkProjectDto, ScanProgressDto, ScanSummaryDto, SearchResultDto, SieveDto, SieveItemDto, SizeMetricDto, TrashReportDto, TreemapNodeDto, ViewportDto } from "@/types/ipc";
 import { DRIVE_CAPACITY, TOTAL_FILES, findPath, flatten, initialDrive, type FsNode, type JunkTag } from "@/data/mockDrive";
 import { CONTAINS_JUNK_FLAG } from "@/lib/treemap-palette";
 import { version as appVersion } from "../../package.json";
@@ -33,6 +33,7 @@ interface Commands {
   get_viewport: { args: { generation: number; nodeId: number | null; metric: SizeMetricDto }; result: ViewportDto };
   get_dev_junk: { args: { generation: number }; result: DevJunkDto };
   get_advice: { args: { generation: number; nodeId: number }; result: AdviceDto };
+  review_sieve: { args: { generation: number; nodeIds: number[] }; result: SieveDto };
   search_nodes: { args: { generation: number; query: string; metric: SizeMetricDto; limit: number | null }; result: SearchResultDto };
   trash_nodes: { args: { generation: number; nodeIds: number[] }; result: TrashReportDto };
   restore_nodes: { args: { generation: number; nodeIds: number[] }; result: TrashReportDto };
@@ -151,6 +152,40 @@ function mockAdvice(generation: number, nodeId: number): AdviceDto {
     alternative: null,
     protectedReason: system ? "System location — removing it could break the operating system or installed apps." : null,
   };
+}
+
+/** Demo Sieve Basket review: same rules as `review_sieve` in Rust (nesting by path). */
+function mockReviewSieve(generation: number, nodeIds: number[]): SieveDto {
+  const byId = new Map(flatten(mockTree).map((n) => [mockNodeId(n), n]));
+  const ids = [...new Set(nodeIds)];
+  const missing = ids.filter((id) => !byId.has(id));
+  const judged = ids.filter((id) => byId.has(id)).map((id) => ({ n: byId.get(id)!, advice: mockAdvice(generation, id) }));
+  const movable = judged.filter((j) => j.advice.level !== "system" && j.n !== mockTree);
+  const nowSecs = Math.floor(Date.now() / 1000);
+  const dto: SieveDto = {
+    generation, items: [], missing, allocatedBytes: 0, logicalBytes: 0, fileCount: 0,
+    safeCount: 0, reviewCount: 0, protectedCount: 0, trashableIds: [],
+  };
+  for (const { n, advice } of judged) {
+    const root = n === mockTree;
+    if (root) Object.assign(advice, { level: "system", title: "Scan root", protectedReason: "The scanned folder itself cannot be moved to Trash." });
+    // Closest collected folder above (the one whose path is longest).
+    const cover = movable
+      .filter((m) => m.n !== n && n.path.startsWith(m.n.path.replace(/\\?$/, "\\")))
+      .sort((a, b) => b.n.path.length - a.n.path.length)[0];
+    const status: SieveItemDto["status"] = cover ? "covered" : advice.level === "system" ? "protected" : "ready";
+    const node = mockNodeDto(n, "allocated", nowSecs);
+    dto.items.push({ node, status, coveredBy: cover ? mockNodeId(cover.n) : null, advice });
+    if (status === "protected") dto.protectedCount++;
+    if (status !== "ready") continue;
+    dto.allocatedBytes += node.allocatedSize;
+    dto.logicalBytes += node.logicalSize;
+    dto.fileCount += node.fileCount;
+    if (advice.level === "safe") dto.safeCount++;
+    else dto.reviewCount++;
+    dto.trashableIds.push(mockNodeId(n));
+  }
+  return dto;
 }
 
 const mock = {
@@ -350,6 +385,13 @@ export const getDevJunk = (generation: number): Promise<DevJunkDto> =>
 /** Safety Advisor verdict ("Can I delete this?") for one node; `system` = the backend refuses to delete it. */
 export const getAdvice = (generation: number, nodeId: number): Promise<AdviceDto> =>
   isTauri() ? call("get_advice", { generation, nodeId }) : Promise.resolve(mockAdvice(generation, nodeId));
+
+/**
+ * Reviews the Sieve Basket of scan `generation`: Safety Advisor verdicts, items inside another
+ * collected folder (counted once), items the backend refuses, and what emptying it frees.
+ */
+export const reviewSieve = (generation: number, nodeIds: number[]): Promise<SieveDto> =>
+  isTauri() ? call("review_sieve", { generation, nodeIds }) : Promise.resolve(mockReviewSieve(generation, nodeIds));
 
 /**
  * `Ctrl+K`: the largest nodes of scan `generation` whose name contains every word of `query`
