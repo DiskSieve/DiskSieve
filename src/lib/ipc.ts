@@ -223,6 +223,9 @@ const mock = {
         scannedBytes,
         unaccountedBytes: Math.max(0, usedBytes - scannedBytes),
       } : null,
+      // The demo keeps no snapshots; Delta Mode uses its own demo growth data.
+      previousSnapshotAt: null,
+      snapshotWarning: null,
     };
   },
 

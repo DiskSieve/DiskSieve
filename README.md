@@ -87,7 +87,7 @@ Existing tools show *what* takes up space, then leave you alone with the harder 
 
 ## Project status
 
-**`v0.1.0`** — the MVP — is complete. `v0.2.0` is in progress: the Safety Advisor and the Sieve Basket are done; next up are Delta Mode and duplicates.
+**`v0.1.0`** — the MVP — is complete. `v0.2.0` is in progress: the Safety Advisor and the Sieve Basket are done, and every scan now saves a snapshot; next up are Delta Mode and duplicates.
 
 | Phase | Scope | Status |
 | :--- | :--- | :---: |

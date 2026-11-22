@@ -300,6 +300,7 @@ export function DiskSieveApp() {
         toast.success("Scan complete", {
           description: `${result.fileCount.toLocaleString()} files · ${formatBytes(result.allocatedBytes)} in ${formatDuration(result.durationMs)}`,
         });
+        if (result.snapshotWarning) toast.warning("Scan snapshot problem", { description: result.snapshotWarning });
       })
       .catch((e: Error) => {
         if (seq !== scanSeq.current) return;
