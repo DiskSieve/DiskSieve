@@ -36,7 +36,8 @@ pub use scanner::{scan, CancelToken, ScanOptions, ScanProgress};
 pub use search::{search_nodes, SearchResult, DEFAULT_SEARCH_LIMIT};
 pub use sieve::{review_sieve, SieveEntry, SieveReview, SieveStatus};
 pub use snapshot::{
-    load_previous, path_hashes, snapshot_path, Snapshot, SnapshotError, SNAPSHOT_FORMAT_VERSION,
+    load_previous, path_hashes, snapshot_path, Delta, RemovedEntry, Snapshot, SnapshotEntry,
+    SnapshotError, SNAPSHOT_FORMAT_VERSION,
 };
 pub use tree::{
     EntryMeta, Node, NodeFlags, NodeId, ScanStats, ScanTree, TreeBuilder, NO_NODE, ROOT,

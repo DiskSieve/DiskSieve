@@ -9,6 +9,7 @@ export type { DevJunkDto } from "./generated/DevJunkDto";
 export type { JunkArtifactDto } from "./generated/JunkArtifactDto";
 export type { JunkProjectDto } from "./generated/JunkProjectDto";
 export type { DriveDto } from "./generated/DriveDto";
+export type { RemovedItemDto } from "./generated/RemovedItemDto";
 export type { SafetyLevelDto } from "./generated/SafetyLevelDto";
 export type { ScanProgressDto } from "./generated/ScanProgressDto";
 export type { ScanSummaryDto } from "./generated/ScanSummaryDto";

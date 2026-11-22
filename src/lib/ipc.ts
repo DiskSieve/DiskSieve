@@ -30,7 +30,7 @@ interface Commands {
   pick_folder: { args: NoArgs; result: string | null };
   start_scan: { args: { path: string; onProgress: Channel<ScanProgressDto> }; result: ScanSummaryDto | null };
   cancel_scan: { args: NoArgs; result: boolean };
-  get_viewport: { args: { generation: number; nodeId: number | null; metric: SizeMetricDto }; result: ViewportDto };
+  get_viewport: { args: { generation: number; nodeId: number | null; metric: SizeMetricDto; delta: boolean }; result: ViewportDto };
   get_dev_junk: { args: { generation: number }; result: DevJunkDto };
   get_advice: { args: { generation: number; nodeId: number }; result: AdviceDto };
   review_sieve: { args: { generation: number; nodeIds: number[] }; result: SieveDto };
@@ -92,7 +92,7 @@ function mockNodeDto(n: FsNode, metric: SizeMetricDto, nowSecs: number): Treemap
     value: metric === "allocated" ? allocatedSize : logicalSize,
     logicalSize,
     allocatedSize,
-    deltaBytes: n.deltaBytes,
+    deltaBytes: n.deltaBytes - removedBelow(n),
     isDir: n.isDir,
     fileCount: n.fileCount,
     newestMtime: nowSecs - n.lastModifiedDaysAgo * 86_400,
@@ -102,6 +102,18 @@ function mockNodeDto(n: FsNode, metric: SizeMetricDto, nowSecs: number): Treemap
     otherCount: null,
   };
 }
+
+/** Demo items "removed since the previous scan", keyed by the folder they were in. */
+const MOCK_REMOVED: Record<string, { name: string; allocatedSize: number; isDir: boolean }[]> = {
+  Downloads: [
+    { name: "ubuntu-24.04-desktop-amd64.iso", allocatedSize: 6_114_656_256, isDir: false },
+    { name: "old-installers", allocatedSize: 2_351_000_000, isDir: true },
+  ],
+  Videos: [{ name: "obs-recording-2026-10-02.mkv", allocatedSize: 3_870_000_000, isDir: false }],
+};
+const removedHere = (n: FsNode) => (n.isDir ? MOCK_REMOVED[n.name] ?? [] : []);
+const removedBelow = (n: FsNode): number =>
+  removedHere(n).reduce((a, r) => a + r.allocatedSize, 0) + (n.children ?? []).reduce((a, c) => a + removedBelow(c), 0);
 
 function mockOther(nodes: TreemapNodeDto[], path: string, count: number): TreemapNodeDto {
   const sum = (f: (n: TreemapNodeDto) => number) => nodes.reduce((a, n) => a + f(n), 0);
@@ -223,8 +235,8 @@ const mock = {
         scannedBytes,
         unaccountedBytes: Math.max(0, usedBytes - scannedBytes),
       } : null,
-      // The demo keeps no snapshots; Delta Mode uses its own demo growth data.
-      previousSnapshotAt: null,
+      // The demo pretends the same drive was scanned yesterday (growth data in mockDrive.ts).
+      previousSnapshotAt: Math.floor(Date.now() / 1000) - 86_400,
       snapshotWarning: null,
     };
   },
@@ -266,20 +278,26 @@ const mock = {
 };
 
 /** Demo projection, same shape and rules as `build_viewport` in Rust. */
-function mockViewport(generation: number, nodeId: number | null, metric: SizeMetricDto): ViewportDto {
+function mockViewport(generation: number, nodeId: number | null, metric: SizeMetricDto, delta: boolean): ViewportDto {
   const target = nodeId === null ? mockTree : flatten(mockTree).find((n) => mockNodeId(n) === nodeId);
   if (!target) throw new IpcError("get_viewport", `node ${nodeId} does not exist in the scan tree`);
   if (!target.isDir) throw new IpcError("get_viewport", `operation not allowed on node ${nodeId}: not a directory`);
   const nowSecs = Math.floor(Date.now() / 1000);
   const trail = findPath(mockTree, target.id) ?? [target];
-  const children = (target.children ?? []).map((c) => mockNodeDto(c, metric, nowSecs)).sort((a, b) => b.value - a.value);
+  const change = (n: TreemapNodeDto) => n.deltaBytes ?? 0;
+  const children = (target.children ?? []).map((c) => mockNodeDto(c, metric, nowSecs))
+    .filter((n) => !delta || change(n) !== 0)
+    // Same order as Rust: the biggest changes (either way) are kept, shown by growth.
+    .sort(delta ? (a, b) => Math.abs(change(b)) - Math.abs(change(a)) : (a, b) => b.value - a.value);
   const nodes = children.slice(0, MAX_VIEWPORT_ITEMS);
+  if (delta) nodes.sort((a, b) => change(b) - change(a));
   const rest = children.slice(MAX_VIEWPORT_ITEMS);
   if (rest.length) nodes.push(mockOther(rest, target.path, rest.length));
   // Demo folders without listed contents ("blobs") are shown as one aggregated node.
-  if (!children.length && target.sizeBytes > 0) {
+  if (!children.length && target.sizeBytes > 0 && (!delta || target.deltaBytes !== 0)) {
     nodes.push(mockOther([mockNodeDto(target, metric, nowSecs)], target.path, target.fileCount));
   }
+  const removed = delta ? removedHere(target) : [];
   return {
     generation,
     currentId: mockNodeId(target),
@@ -287,7 +305,11 @@ function mockViewport(generation: number, nodeId: number | null, metric: SizeMet
     breadcrumbs: trail.map((n) => ({ id: mockNodeId(n), name: n.name })),
     metric,
     totalValue: nodes.reduce((a, n) => a + n.value, 0),
+    deltaBytes: target.deltaBytes - removedBelow(target),
+    deltaMode: delta,
     nodes,
+    removed: removed.map((r) => ({ ...r, path: `${target.path.replace(/\\$/, "")}\\${r.name}` })),
+    removedCount: removed.length,
   };
 }
 
@@ -370,12 +392,13 @@ export const startScan = (
 /**
  * Projection of directory `nodeId` (`null` = scan root) from scan `generation`: up to 200
  * largest children plus one "Other" node (`id: null`). Rejects with an `IpcError` for a stale
- * generation or an unknown node.
+ * generation or an unknown node. With `delta` (needs a previous scan of the same location),
+ * only changed children are listed, biggest growth first, plus the items removed from it.
  */
-export const getViewport = (generation: number, nodeId: number | null, metric: SizeMetricDto): Promise<ViewportDto> => {
-  if (isTauri()) return call("get_viewport", { generation, nodeId, metric });
+export const getViewport = (generation: number, nodeId: number | null, metric: SizeMetricDto, delta = false): Promise<ViewportDto> => {
+  if (isTauri()) return call("get_viewport", { generation, nodeId, metric, delta });
   try {
-    return Promise.resolve(mockViewport(generation, nodeId, metric));
+    return Promise.resolve(mockViewport(generation, nodeId, metric, delta));
   } catch (e) {
     return Promise.reject(e);
   }
