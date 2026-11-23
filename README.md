@@ -8,6 +8,8 @@
 
 It answers not only *“what is taking up space?”*, but also *“what can I safely delete?”* and *“what has grown since last time?”*.
 
+**[Website](https://disksieve.chrubasik.dev) · [Live demo](https://disksieve.chrubasik.dev/demo/) · [Download](https://github.com/DiskSieve/disksieve/releases/latest)**
+
 [![CI](https://github.com/DiskSieve/disksieve/actions/workflows/ci.yml/badge.svg)](https://github.com/DiskSieve/disksieve/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-22C55E.svg)](LICENSE)
 ![Status](https://img.shields.io/badge/status-alpha-F5B83D.svg)
